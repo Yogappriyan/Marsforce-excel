@@ -1,0 +1,910 @@
+# STRUCTIQ – FINAL CORRECTED DEVELOPMENT UPDATE PROMPT
+## Dynamic Area-Wise Excel Generation With Street-Wise Headers Inside Each Area Workbook
+
+### 1. ROLE AND EXISTING PROJECT CONTEXT
+
+Act as a Principal Full-Stack Engineer, Software Architect, Excel Data Engineer, Address Classification Engineer, AI Engineer and Quality Assurance Engineer.
+
+You are working inside my existing, partially developed **StructIQ – AI Data Intelligence & Structuring Platform** in Google AI Studio.
+
+**DO NOT CREATE A NEW APPLICATION. DO NOT REBUILD THE PROJECT FROM SCRATCH.**
+
+First inspect my existing project files, current React UI, backend, processing services, Excel libraries, data structures, database, export features and working API integrations.
+
+Preserve existing working functionality.
+
+Implement this corrected and final business requirement as the application's highest priority.
+
+The reference screenshots supplied in this conversation demonstrate the expected output format.
+
+### 2. MOST IMPORTANT REQUIREMENT
+
+The user uploads one unstructured, mixed or partially structured Excel file.
+
+The Excel may contain hundreds or thousands of customer records scattered across many different areas.
+
+The software must:
+
+1. Read every source row.
+2. Identify the correct area for each customer.
+3. Find all customer records belonging to the same area, even when they appear far apart in the original worksheet.
+4. Combine those records into one area-specific dataset.
+5. Analyse the address of every customer in that area.
+6. Identify streets, roads, colonies, layouts and sub-localities within the area.
+7. Group customers by their identified street/locality.
+8. Insert a clearly formatted street/locality heading above each group.
+9. Place the corresponding customer records directly below that heading.
+10. Generate exactly one Excel workbook for each distinct area.
+11. Repeat dynamically for every unique area in the uploaded dataset.
+12. Package the generated workbooks into a downloadable ZIP.
+
+**ONE AREA = ONE EXCEL FILE.**
+
+**ALL STREETS BELONGING TO THAT AREA MUST APPEAR AS SEPARATE HEADED SECTIONS INSIDE THE SAME AREA EXCEL FILE.**
+
+Do not generate separate Excel workbooks for individual streets.
+
+This is a critical requirement and overrides any earlier instruction suggesting one workbook per street.
+
+### 3. EXAMPLE OF THE EXPECTED BEHAVIOUR
+
+Suppose a file contains customer records with an `AreaName` column.
+
+The same area name may appear repeatedly in completely different parts of the Excel.
+
+Example:
+
+    Source Row 2   → AREA_A
+    Source Row 3   → AREA_B
+    Source Row 4   → AREA_C
+    Source Row 5   → AREA_A
+    Source Row 6   → AREA_D
+    Source Row 7   → AREA_B
+    Source Row 8   → AREA_A
+    Source Row 9   → AREA_C
+
+The engine must consolidate:
+
+    AREA_A → All customers from rows 2, 5, 8
+    AREA_B → All customers from rows 3, 7
+    AREA_C → All customers from rows 4, 9
+    AREA_D → All customers from row 6
+
+Then generate:
+
+    AREA_A.xlsx
+    AREA_B.xlsx
+    AREA_C.xlsx
+    AREA_D.xlsx
+
+Each area workbook must contain all customers belonging to that area, organised by street/locality.
+
+These area names are placeholders only.
+
+**DO NOT HARDCODE ANY AREA NAME.**
+
+All actual area names must come from uploaded data.
+
+### 4. DYNAMIC AREA COUNT
+
+The program must detect the actual number of distinct area names.
+
+Examples:
+
+- 5 distinct areas → 5 Excel workbooks.
+- 18 distinct areas → 18 Excel workbooks.
+- 40 distinct areas → 40 Excel workbooks.
+- 100 distinct areas → 100 Excel workbooks.
+
+The number is dynamic.
+
+If the uploaded file contains 40 distinct valid area labels, there must be exactly 40 corresponding area workbooks.
+
+Do not generate additional street workbooks.
+
+Do not generate duplicate files for harmless differences such as casing or surrounding whitespace.
+
+Do not automatically combine genuinely different area subdivisions.
+
+For example, `ZONE-1` and `ZONE-2` must remain separate unless the user explicitly approves merging them.
+
+### 5. FINAL OUTPUT EXCEL FORMAT – CRITICAL
+
+Each generated area Excel must look like a properly structured customer register.
+
+The main worksheet must contain:
+
+**FIRST: MAIN AREA HEADING**
+
+Use the actual detected area name as a large, bold, prominent heading at the top.
+
+**SECOND: STREET / LOCALITY HEADING**
+
+Under the main area heading, list the first identified street, road or locality group as a bold section header.
+
+**THIRD: CUSTOMER DETAILS**
+
+Immediately below that section heading, display all corresponding customer records in a proper table.
+
+**FOURTH: NEXT STREET HEADING**
+
+After the last customer of the first group, insert the next street/locality heading.
+
+**FIFTH: NEXT CUSTOMER GROUP**
+
+Display all customers belonging to the second group below that heading.
+
+Continue until every customer in the area is represented.
+
+### 6. REQUIRED STRUCTURED WORKSHEET LAYOUT
+
+Example only:
+
+    ======================================================
+                         AREA_A
+                   TOTAL CUSTOMERS: 100
+    ======================================================
+
+    STREET / LOCALITY GROUP 1
+    ------------------------------------------------------
+    ConsumerNo | ConsumerName | MobileNo | Address | ...
+    10001      | Customer A   | ...      | ...     |
+    10002      | Customer B   | ...      | ...     |
+    10003      | Customer C   | ...      | ...     |
+
+    STREET / LOCALITY GROUP 2
+    ------------------------------------------------------
+    ConsumerNo | ConsumerName | MobileNo | Address | ...
+    10004      | Customer D   | ...      | ...     |
+    10005      | Customer E   | ...      | ...     |
+
+    STREET / LOCALITY GROUP 3
+    ------------------------------------------------------
+    ConsumerNo | ConsumerName | MobileNo | Address | ...
+    10006      | Customer F   | ...      | ...     |
+    10007      | Customer G   | ...      | ...     |
+
+    STREET / LOCALITY NOT IDENTIFIED
+    ------------------------------------------------------
+    ConsumerNo | ConsumerName | MobileNo | Address | ...
+    10008      | Customer H   | ...      | ...     |
+
+    ======================================================
+                      END OF AREA
+    ======================================================
+
+The street/locality headings are section dividers.
+
+They must not be counted as customer records.
+
+Actual customer columns and values must come from the uploaded source file.
+
+Do not substitute sample data in exported workbooks.
+
+### 7. USE THE REFERENCE SCREENSHOTS
+
+Study the supplied images carefully.
+
+They demonstrate two important things:
+
+**Screenshot A: Unstructured area values**
+
+The same AreaName appears multiple times at different source row positions.
+
+Required behaviour:
+
+Gather all records with the same canonical area into one area workbook, regardless of original row order.
+
+**Screenshot B: Properly structured customer register**
+
+The worksheet includes geographic section headings, with relevant customers listed underneath.
+
+Required behaviour:
+
+Generate the same type of sectioned presentation automatically for every detected area.
+
+The final generated area workbook should have:
+
+- One main area title.
+- Multiple street/locality headings where applicable.
+- Customer records correctly grouped below each heading.
+- All original customer columns preserved.
+- Professional consistent styling.
+
+If a source worksheet already contains correctly structured section headings, detect and use them as evidence.
+
+However, do not blindly trust an existing section heading when a customer's own address contradicts it.
+
+### 8. READ AND ANALYSE EVERY ROW
+
+Create or enhance a Row Analysis Engine.
+
+The engine must understand different row types:
+
+- Column header row.
+- Customer record row.
+- Existing street/locality section heading row.
+- Empty separator row.
+- Report/subtotal row.
+- Invalid or ambiguous row.
+
+Every physical row in each selected worksheet must be inspected.
+
+Keep original worksheet names and physical row numbers for traceability.
+
+Do not classify street headings as customers.
+
+Do not discard actual customer rows simply because some cells are blank.
+
+Do not assume that data will already be sorted by area.
+
+### 9. AREA IDENTIFICATION LOGIC
+
+Preferred classification order:
+
+1. Explicit mapped `AreaName` column.
+2. Another explicitly mapped area/locality column.
+3. User-approved area aliases and dictionaries.
+4. Reliable address parsing.
+5. AI assistance for genuinely ambiguous values.
+6. Manual review when unresolved.
+
+When an explicit AreaName value exists, treat it as the primary area label unless there is a clear conflict requiring review.
+
+The system must be able to consolidate all rows with the same area label even if they are scattered throughout multiple worksheets.
+
+Preserve the original area value.
+
+Normalise harmless formatting differences.
+
+Do not automatically merge different named subdivisions.
+
+### 10. STREET / LOCALITY IDENTIFICATION LOGIC
+
+This feature is equally important.
+
+After grouping customer records by area, inspect every customer's address.
+
+Try to identify:
+
+- Street names.
+- Road names.
+- Main roads.
+- Cross streets.
+- Numbered streets.
+- Numbered crosses.
+- Lanes.
+- Avenues.
+- Nagars.
+- Colonies.
+- Layouts.
+- Residential subdivisions.
+- Villages or smaller localities where relevant.
+
+A street/locality group must be derived from available address evidence, existing source section headings, approved dictionaries or verified user corrections.
+
+Do not use a predefined list of streets for any specific area.
+
+The system must dynamically recognise the groups present in the actual data.
+
+### 11. IMPORTANT GROUPING DETAILS
+
+Consider these cases.
+
+**Case A – Same street, different customers**
+
+All customers belonging to the same validated street group must be placed under one heading.
+
+**Case B – Different streets within the same area**
+
+Keep them under separate headings within the same Excel workbook.
+
+**Case C – Same street name appears in two different areas**
+
+Keep them separated because their parent area is different.
+
+**Case D – Common abbreviations**
+
+The engine may treat verified equivalent address expressions as the same group.
+
+For example, an approved equivalence between `ROAD` and `RD` can be reused.
+
+**Case E – Different numbered streets**
+
+Do not merge `1ST STREET` with `2ND STREET`.
+
+Do not merge `4TH CROSS` with `5TH CROSS`.
+
+**Case F – Ambiguous locality**
+
+Do not guess.
+
+Place the customer under `STREET / LOCALITY NOT IDENTIFIED` inside the correct area workbook and flag the record for review.
+
+**Case G – Existing source section headings**
+
+Use the heading as contextual evidence but verify the customer address where possible.
+
+**Case H – Locality within locality**
+
+If the same street name exists in two different sub-localities within one area, retain the sub-locality in the group identity.
+
+### 12. ADDRESS PARSING RULES
+
+For each record:
+
+1. Read the original address.
+2. Preserve the original value unchanged.
+3. Normalise a separate processing copy.
+4. Extract recognisable house/door number.
+5. Extract street, road or cross-street information.
+6. Extract locality or sub-area information.
+7. Compare against the AreaName column.
+8. Compare against existing section headings where present.
+9. Determine the best supported street/locality group.
+10. Assign a confidence score and provenance.
+11. Flag unresolved cases.
+12. Save the classification.
+
+Support English and Tamil characters.
+
+Never invent missing geographic details.
+
+Run deterministic rules first, and Gemini AI only when necessary.
+
+Do not make one Gemini API call per customer row.
+
+Batch and cache repeated ambiguous address patterns.
+
+### 13. ORIGINAL DATA MUST BE PRESERVED
+
+The uploaded workbook may contain:
+
+- Unique consumer identifiers.
+- Consumer numbers.
+- Consumer names.
+- Mobile numbers.
+- Distributor identifiers.
+- Addresses.
+- Area names.
+- Financial or operational fields.
+- Additional custom columns.
+
+All original columns must remain available in the generated Excel.
+
+Do not delete or modify original customer values silently.
+
+Add derived fields separately if useful.
+
+Very important:
+
+**Consumer IDs and mobile numbers must be treated as text identifiers, not floating-point numbers.**
+
+Prevent scientific-notation corruption in newly generated outputs when exact source values are available.
+
+If Excel has already irreversibly rounded a long numeric identifier, flag the precision issue rather than fabricating digits.
+
+### 14. GROUPED EXPORT AND MACHINE-READABLE DATA
+
+Each area workbook should contain:
+
+**Sheet 1: STRUCTURED_DATA**
+
+This is the primary presentation worksheet.
+
+It must contain:
+
+- Main area heading at the top.
+- Street/locality section headings.
+- Customer details under each heading.
+- Clear formatting matching the reference screenshot style.
+
+**Sheet 2: ALL_RECORDS**
+
+Contains all customer records belonging to the area as one continuous machine-readable table.
+
+No inserted section-heading rows.
+
+Include original columns and any validated derived classification columns.
+
+**Sheet 3: SUMMARY**
+
+Contains:
+
+- Area name.
+- Total customer count.
+- Number of identified street/locality groups.
+- Customer count per street/locality.
+- Unidentified street count.
+- Needs-review count.
+- Processing date.
+
+These are three worksheets **inside the same area Excel workbook**, not three separate Excel files.
+
+Optional review information can be included as another worksheet inside the same workbook.
+
+### 15. STREET-WISE ORDERING
+
+Inside `STRUCTURED_DATA`:
+
+1. Show the main area heading.
+2. Show a short area summary.
+3. List identified street/locality groups in a consistent order.
+4. Insert the group heading.
+5. Display the corresponding customer records.
+6. Include an optional customer count beside the group heading.
+7. Continue with the next group.
+8. Put unidentified street records at the end under their own heading.
+
+Use a deterministic default group sort, such as natural alphabetical order, while allowing the user to choose original or custom order later.
+
+For each group, retain source order by default unless the user explicitly requests sorting by customer name or another field.
+
+No customer should appear twice in the main grouped view.
+
+### 16. PROFESSIONAL EXCEL STYLING
+
+The generated output should look like an organised business customer register.
+
+Use:
+
+**Main Area Heading**
+
+- Dark navy blue background.
+- White bold text.
+- Large font.
+- Clear area name.
+- Visually separated from the table.
+
+**Street / Locality Heading**
+
+- Light blue or another clearly contrasting background.
+- Bold dark text.
+- Appropriate spacing.
+- Optional customer count.
+
+**Customer Table Header**
+
+- Professional blue or navy background.
+- White bold text.
+- Consistent column order.
+
+**Customer Rows**
+
+- White background.
+- Subtle borders.
+- Alternating row shading where appropriate.
+- Wrapped address text.
+- Correct ID and phone formats.
+- Readable column widths.
+
+Use frozen panes and auto-filters on the machine-readable `ALL_RECORDS` sheet.
+
+Do not allow styling to corrupt data.
+
+### 17. REQUIRED FILE GENERATION LOGIC
+
+Create one workbook per canonical distinct area.
+
+The process should conceptually work as follows:
+
+    uploaded_file
+        ↓
+    read_all_source_rows
+        ↓
+    identify_customer_records
+        ↓
+    detect_all_distinct_areas
+        ↓
+    group_customers_by_area
+        ↓
+    for each area:
+        analyse_customer_addresses
+        detect_street_locality_groups
+        organise_customers_under_headings
+        create_one_area_workbook
+        add_structured_data_sheet
+        add_all_records_sheet
+        add_summary_sheet
+        save_workbook
+        ↓
+    package_all_area_workbooks
+        ↓
+    generate_one_zip_download
+
+No hardcoded area or street names.
+
+### 18. EXPECTED ZIP STRUCTURE
+
+If the upload contains 40 distinct valid areas:
+
+    STRUCTIQ_AREA_WISE_EXPORT.zip
+    │
+    ├── AREA_01.xlsx
+    ├── AREA_02.xlsx
+    ├── AREA_03.xlsx
+    ├── AREA_04.xlsx
+    ├── ...
+    └── AREA_40.xlsx
+
+The generic names above illustrate file count only.
+
+Actual filenames must use the detected area names:
+
+    [DETECTED_AREA_NAME].xlsx
+
+Sanitise invalid filename characters and resolve filename collisions safely.
+
+**Exactly one area workbook per distinct area.**
+
+**Never generate individual street Excel files.**
+
+If some records have no identifiable area, preserve them in a clearly documented unassigned-data workflow. Do not invent an area merely to maintain the workbook count. Provide an explicit unassigned-record report or optional sidecar CSV, and show its count to the user.
+
+### 19. RECORD RECONCILIATION – NON-NEGOTIABLE
+
+Every customer record must be accounted for.
+
+Use these reconciliation formulas:
+
+    Total Imported Customer Records
+      =
+    Total Assigned Area Records
+      +
+    Total Unassigned Area Records
+
+For each area:
+
+    Total Area Customer Records
+      =
+    Sum of Identified Street Group Records
+      +
+    Unidentified Street Records
+
+Verify:
+
+- Customer records are not lost.
+- Customers are not duplicated within grouped output.
+- Section-heading rows are not counted as customers.
+- Summary counts match actual records.
+- `ALL_RECORDS` matches `STRUCTURED_DATA` customer records.
+- Customer details are identical to the preserved original fields.
+- Generated workbook count matches unique canonical area count.
+
+Run reconciliation before marking an export as successfully completed.
+
+If checks fail, display an error and do not publish the export as valid.
+
+### 20. USER INTERFACE – EXISTING STRUCTIQ UPDATE
+
+Preserve existing functional UI components.
+
+Add or complete the following experience.
+
+**UPLOAD DATA**
+
+Allow Excel/CSV file upload.
+
+**PREVIEW DATA**
+
+Show source columns, selected worksheets, row count and sample records.
+
+**COLUMN MAPPING**
+
+Detect and confirm the customer ID, name, phone, address and area columns.
+
+**PROCESS DATA**
+
+Analyse all source rows and categorise customers.
+
+**AREA PREVIEW**
+
+Show:
+
+- Total imported customers.
+- Total distinct areas.
+- Total street/locality groups.
+- Records needing review.
+
+Display all detected areas with their customer counts.
+
+**SELECT AN AREA**
+
+Show the detected street/locality groups and customer records belonging to that area.
+
+**REVIEW CLASSIFICATIONS**
+
+Allow users to correct incorrect street/locality assignments.
+
+**EXPORT**
+
+Provide one prominent option:
+
+`GENERATE ALL AREA-WISE EXCEL FILES`
+
+After generation, show:
+
+- Number of area workbooks created.
+- Total customers exported.
+- Total records needing review.
+- Any unassigned records.
+- Export completion status.
+
+Provide a working:
+
+`DOWNLOAD ALL AS ZIP`
+
+Also allow downloading an individual area's Excel workbook.
+
+Do not make street-wise separate-workbook export the default or part of the main required workflow.
+
+### 21. TECHNOLOGY AND IMPLEMENTATION
+
+Continue using the existing StructIQ architecture.
+
+Original planned stack:
+
+- React.
+- TypeScript.
+- Vite.
+- Tailwind CSS.
+- Node.js.
+- Express.
+- PostgreSQL.
+- Existing ORM/data-access layer.
+- ExcelJS or existing compatible Excel writing library.
+- Existing Excel parsing library.
+- Gemini integration for ambiguous classifications.
+- Existing background job processing.
+
+Inspect what is actually installed and functioning before making changes.
+
+Create or update logical services such as:
+
+- ExcelParserService.
+- RowClassificationService.
+- AreaGroupingService.
+- AddressParsingService.
+- StreetGroupingService.
+- ClassificationReviewService.
+- StructuredExcelExportService.
+- ZipGenerationService.
+- ProcessingJobService.
+
+These names describe responsibilities. Reuse existing modules instead of duplicating services.
+
+Process large uploads in manageable chunks.
+
+Use background jobs and streaming where appropriate.
+
+Do not use simulated processing timers or fake downloads.
+
+### 22. IMPORTANT EDGE CASES
+
+The engine must handle:
+
+1. Unsorted area records.
+2. Repeated area names.
+3. Hundreds of different area names.
+4. Areas containing many streets.
+5. Areas containing only one street.
+6. Areas with unidentified streets.
+7. Street spelling variations.
+8. Numbered streets and cross streets.
+9. Identical street names in different areas.
+10. Source worksheets with existing section headings.
+11. Source worksheets without any headings.
+12. Multiple input worksheets.
+13. Empty rows.
+14. Missing customer fields.
+15. Missing area values.
+16. Missing street values.
+17. Tamil and English addresses.
+18. Long consumer identifiers.
+19. Phone numbers with leading zeros.
+20. Scientific notation.
+21. Duplicate customer records.
+22. Unknown extra columns.
+23. Invalid or very long worksheet names.
+24. Large files.
+25. Conflicting geographic information.
+26. Multiple geographic levels inside one address.
+27. Repeated section headings in different parts of the workbook.
+28. Hidden rows and filtered rows.
+29. Spreadsheet formulas.
+30. Unsafe content in exported cells.
+
+No source customer record may be silently discarded.
+
+### 23. SECURITY REQUIREMENTS
+
+Preserve secure upload and export handling.
+
+Maintain:
+
+- Existing authentication.
+- Server-side authorization.
+- File validation.
+- Upload limits.
+- Secure database access.
+- Private customer information.
+- Proper API key protection.
+- Safe Excel formula handling.
+- Safe ZIP filename handling.
+- Audit records.
+- Controlled access to generated exports.
+
+Do not expose customer data in logs or public file URLs.
+
+### 24. TEST CASES – REQUIRED
+
+**TEST 1: Repeated Area Names**
+
+Create a fixture where the same area appears in scattered rows throughout the Excel.
+
+Expected:
+
+All customers of that area appear together in exactly one generated workbook.
+
+**TEST 2: Multiple Streets in One Area**
+
+Create a fixture where one area contains five distinct, clearly identifiable street/locality groups.
+
+Expected:
+
+Exactly one workbook for that area.
+
+Five separate street/locality sections within `STRUCTURED_DATA`.
+
+No individual street workbooks.
+
+**TEST 3: Forty Areas**
+
+Generate a test input with exactly 40 unique valid area names, each containing several customers.
+
+Expected:
+
+Exactly 40 area Excel workbooks.
+
+Every area workbook contains only its own customers.
+
+Every workbook has structured street/locality headings where supported by the source data.
+
+**TEST 4: Existing Heading Rows**
+
+Use a fixture containing standalone bold street headings between customer records.
+
+Expected:
+
+Heading rows correctly recognised.
+
+Heading rows excluded from customer counts.
+
+Corresponding customers grouped accurately.
+
+**TEST 5: No Existing Heading Rows**
+
+Use an unsorted customer list with address text but no street headings.
+
+Expected:
+
+The application extracts supported street groups and generates the required structured output.
+
+Ambiguous cases go to review.
+
+**TEST 6: Data Integrity**
+
+Verify every source customer ID and original field.
+
+Expected:
+
+No lost customers.
+
+No invented identifiers.
+
+No unintended duplicate rows.
+
+**TEST 7: ZIP Verification**
+
+Generate and download the ZIP.
+
+Expected:
+
+All workbooks exist and open correctly.
+
+Workbook count matches distinct area count.
+
+**TEST 8: Regression**
+
+Verify existing functionality continues to work.
+
+Expected:
+
+No broken existing pages, routes, data storage or login functionality.
+
+### 25. IMPLEMENTATION ORDER
+
+Continue the current project in this order:
+
+**STEP 1 – CODEBASE AUDIT**
+
+Inspect the existing implementation.
+
+Identify what is already functional and what is missing.
+
+**STEP 2 – COMPLETE ROW READING**
+
+Ensure every physical Excel row is parsed correctly.
+
+**STEP 3 – COMPLETE AREA GROUPING**
+
+Group all scattered customer records by dynamically detected area.
+
+**STEP 4 – COMPLETE STREET CLASSIFICATION**
+
+Analyse customer addresses and identify street/locality groups inside each area.
+
+**STEP 5 – COMPLETE STRUCTURED EXCEL GENERATION**
+
+Generate exactly one professionally formatted workbook for each area.
+
+Create the main area heading and street-wise section headings.
+
+**STEP 6 – COMPLETE ZIP EXPORT**
+
+Package every area workbook and enable a working download.
+
+**STEP 7 – FRONTEND INTEGRATION**
+
+Connect upload, processing, area preview, review, export and ZIP download.
+
+**STEP 8 – VALIDATION**
+
+Test against genuine XLSX files and generated test fixtures.
+
+Verify customer counts, grouping accuracy and workbook integrity.
+
+### 26. DEFINITION OF DONE
+
+The requirement is complete only when:
+
+- Any supported mixed Excel file can be uploaded.
+- All relevant rows are analysed.
+- All distinct area names are identified.
+- Records with the same area name are consolidated.
+- Each area's customer addresses are analysed.
+- Streets/localities are correctly grouped where sufficient evidence exists.
+- Each area workbook begins with its area name.
+- Each street/locality has its own visible heading.
+- Corresponding customers appear below that heading.
+- Every original customer record remains accounted for.
+- Exactly one Excel file is generated per identified area.
+- No separate street Excel files are produced.
+- All area files can be downloaded in one valid ZIP.
+- The application reports any unresolved classifications rather than inventing values.
+- Existing working features remain functional.
+- Real end-to-end tests pass.
+
+### 27. FINAL COMMAND TO GOOGLE AI STUDIO
+
+**Do not misunderstand this requirement.**
+
+I do not want one Excel per street.
+
+I want **one Excel per area**, containing all of that area's customers, organised by street/locality headings inside the workbook.
+
+If a file contains 40 different areas, produce 40 area-specific Excel workbooks.
+
+Within each workbook, identify every supported street/locality, insert a heading and place matching customers underneath it.
+
+Use the uploaded actual data, not hardcoded examples.
+
+Analyse every relevant source row.
+
+Preserve source customer details.
+
+Do not generate fake files or fake results.
+
+Continue developing my existing StructIQ application now. Implement the real area-grouping, street-heading formatting and Excel ZIP export workflow. Verify the generated workbooks, report actual test results and clearly identify any remaining issues.
+
+**FINAL BUSINESS RULE: ONE AREA = ONE EXCEL WORKBOOK; MULTIPLE STREET HEADINGS AND CUSTOMER GROUPS INSIDE THAT WORKBOOK.**

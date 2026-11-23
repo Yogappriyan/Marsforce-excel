@@ -1,0 +1,1554 @@
+# STRUCTIQ – FINAL MASTER DEVELOPMENT UPDATE PROMPT
+## Intelligent Row-by-Row Excel Analysis, Street-Level Classification, Automatic Area & Street Excel Separation, Professional Excel Generation and ZIP Export
+
+### YOUR ROLE
+
+Act as a Principal Software Architect, Senior Full-Stack Developer, Excel Data Engineer, AI Engineer, Address Parsing Specialist, Database Architect, Quality Assurance Engineer and Enterprise UI/UX Designer.
+
+You are working on my **existing, partially developed StructIQ – AI Data Intelligence & Structuring Platform** in Google AI Studio.
+
+**IMPORTANT: THIS IS AN UPDATE TO MY EXISTING APPLICATION. DO NOT CREATE A NEW PROJECT. DO NOT REBUILD OR DELETE EXISTING WORKING FEATURES.**
+
+Inspect the current codebase, understand what has already been implemented, fix incomplete functionality and develop the exact requirements described below.
+
+I am providing a reference screenshot showing the desired structured Excel format.
+
+The screenshot demonstrates how customer records can be arranged beneath meaningful street, road, colony or locality headings.
+
+The screenshot is a **reference for the required grouping and output presentation**. Actual records must come from the uploaded Excel/CSV file, not from hardcoded screenshot content.
+
+Do not hardcode any example area names, street names, customer names, addresses or record counts.
+
+Everything must be detected dynamically from the actual uploaded file.
+
+---
+
+# 1. PRIMARY OBJECTIVE
+
+Develop a fully functional intelligent Excel structuring and categorisation engine.
+
+The user will upload one Excel or CSV file containing mixed or partially structured customer records.
+
+The application must:
+
+1. Read every worksheet selected for import.
+2. Read and analyse every single physical row.
+3. Identify data headers, customer records, section headings, empty rows and problematic rows.
+4. Understand the column structure.
+5. Identify every distinct area represented in the dataset.
+6. Detect street, road, cross-street, colony, layout, locality and sub-area information.
+7. Detect existing street-group headings embedded within the worksheet.
+8. Understand which customer records belong to each heading or geographic category.
+9. Validate grouping against each record's address.
+10. Organise customer records into correct geographic groups.
+11. Preserve every original customer record and all original columns.
+12. Generate separate Excel workbooks for every area.
+13. Generate separate Excel workbooks for every distinct street/locality group.
+14. Produce correctly structured and professionally formatted worksheets.
+15. Generate a complete summary of areas, street groups and customer counts.
+16. Package the generated Excel files into a single ZIP.
+17. Provide an actual working ZIP download.
+18. Maintain data integrity and provide a review workflow for ambiguous classifications.
+
+**The system must not simply split by the AreaName column.**
+
+The core intelligence must operate at the **individual row, address and street/locality group level**.
+
+---
+
+# 2. UNDERSTAND THE REFERENCE SCREENSHOT CORRECTLY
+
+The reference screenshot represents the type of structured output required.
+
+It includes customer information columns such as:
+
+- Unique consumer identifier
+- Consumer number
+- Consumer name
+- Mobile number
+- Distributor identifier
+- Address
+- Area name
+- Additional existing business-specific columns
+
+The exact column names may vary between uploaded files.
+
+The worksheet also contains standalone section-heading rows that describe a street, road, locality or geographic subgroup.
+
+These heading rows appear between groups of customer records.
+
+For example, a generic worksheet may be arranged as:
+
+    SECTION: LOCALITY GROUP A
+    Customer record 1
+    Customer record 2
+    Customer record 3
+
+    SECTION: LOCALITY GROUP B
+    Customer record 4
+    Customer record 5
+
+    SECTION: ROAD GROUP C
+    Customer record 6
+    Customer record 7
+    Customer record 8
+
+    SECTION: CROSS STREET GROUP D
+    Customer record 9
+    Customer record 10
+
+The section headings are **not customer records**.
+
+They are classification information that helps explain which records belong together.
+
+A heading may be:
+
+- Bold text.
+- Uppercase text.
+- Center-aligned text.
+- A merged cell.
+- A row containing only a street/locality name.
+- A row with an address-group name and no customer number, customer name or mobile number.
+
+However, formatting alone must never determine classification.
+
+The system must combine cell content, row structure, neighbouring records, section context and address matching.
+
+**Important:** A worksheet can contain thousands of records where every customer's AreaName value is identical, but those customers belong to many different streets and localities.
+
+The system must still detect and separate all relevant geographic subgroups.
+
+---
+
+# 3. MANDATORY ROW-BY-ROW ANALYSIS ENGINE
+
+Implement a dedicated **Row Intelligence Engine**.
+
+Every physical row must be examined.
+
+The engine must assign a row type:
+
+- COLUMN_HEADER
+- CUSTOMER_RECORD
+- SECTION_HEADING
+- EMPTY_SEPARATOR
+- SUBTOTAL_OR_REPORT_ROW
+- INVALID_RECORD
+- NEEDS_REVIEW
+
+Do not assume that every row below the first header is a customer.
+
+## 3.1 Processing sequence
+
+For each worksheet:
+
+1. Identify actual header rows.
+2. Detect column names and relevant data fields.
+3. Read the original value of each cell.
+4. Preserve the physical Excel row number.
+5. Inspect whether the row contains valid customer data.
+6. Inspect whether it contains a street/locality section heading.
+7. Track the current section heading as contextual information.
+8. Extract each customer's own address information.
+9. Compare the customer address with the current section.
+10. Assign a geographic group only when supported by evidence.
+11. Detect conflicts between the address and the section heading.
+12. Mark ambiguous records for review.
+13. Store the resulting classification and confidence.
+14. Continue to the final worksheet row.
+
+**No row may be silently skipped.**
+
+Maintain an audit entry for every physical source row, including headings and blank separators.
+
+## 3.2 Section heading detection
+
+The engine should identify a section heading using a combination of:
+
+- Missing customer number.
+- Missing customer name.
+- Missing mobile number.
+- Nonempty location-like text in the address or another column.
+- Bold font where style metadata is available.
+- Merged cells where available.
+- Centre alignment where available.
+- Entire row containing a prominent geographic label.
+- Neighbouring customer rows with matching address tokens.
+- Consistent section-header patterns in the same worksheet.
+
+Do not treat every uppercase customer name or every mostly empty row as a section heading.
+
+Store:
+
+- Original heading text.
+- Source worksheet.
+- Original row number.
+- Detected group type.
+- Classification confidence.
+- Heading detection reason.
+
+## 3.3 Heading context tracking
+
+When a section heading is detected, treat it as the active contextual grouping candidate for subsequent rows.
+
+Continue until another valid section heading appears or the relevant grouping ends.
+
+But **do not blindly assign all following customers to the active heading**.
+
+If the customer's address supports the heading, assign the appropriate group.
+
+If the address explicitly identifies a different street or locality, flag the conflict and use the validated classification.
+
+If the customer address does not contain enough location information, use the heading only as contextual evidence and flag the classification for review.
+
+If a heading is repeated later in the sheet, recognise it as the same canonical group when the matching is reliable.
+
+## 3.4 Row auditing
+
+Store for every physical row:
+
+- Upload ID
+- Worksheet ID
+- Original row number
+- Row type
+- Original cell values
+- Active section context
+- Detected area
+- Detected street or locality
+- Classification source
+- Confidence
+- Validation issues
+- Review status
+
+A reviewer must be able to trace any exported customer back to the original worksheet and row.
+
+---
+
+# 4. INTELLIGENT AREA IDENTIFICATION
+
+Automatically identify all distinct areas from the uploaded data.
+
+The system must support both:
+
+**A. An explicit area column**
+
+If the upload has AreaName or a mapped equivalent, use it as the primary source.
+
+**B. Area information embedded within an address**
+
+If the explicit area column is missing or incomplete, parse the full address.
+
+Look for approved area names, aliases and meaningful geographic components.
+
+Do not assume a location without sufficient evidence.
+
+## 4.1 Column mapping
+
+Support dynamic detection of columns such as:
+
+- AreaName
+- Area
+- Locality
+- Location
+- Address
+- Full Address
+- Street
+- Road
+- Zone
+- Customer Address
+
+Provide manual mapping when automatic confidence is insufficient.
+
+## 4.2 Area normalisation
+
+Normalise:
+
+- Leading/trailing whitespace.
+- Repeated spaces.
+- Harmless casing differences.
+- Approved abbreviation variants.
+- Approved spelling aliases.
+
+Preserve the exact original area value separately.
+
+Do not automatically merge numbered subdivisions, different delivery zones or similar-looking locality names.
+
+Example policy:
+
+`AREA A - 1` and `AREA A - 2` remain separate unless the user explicitly approves merging.
+
+## 4.3 Dynamic area detection
+
+If the Excel contains:
+
+- 1 area, generate 1 area workbook.
+- 12 areas, generate 12 area workbooks.
+- 40 areas, generate 40 area workbooks.
+- Any other number of areas, generate the corresponding number of area workbooks.
+
+The count must be computed from the uploaded dataset.
+
+**Never hardcode an area list.**
+
+---
+
+# 5. INTELLIGENT STREET, ROAD AND LOCALITY DETECTION
+
+Implement an advanced address interpretation engine.
+
+Detect geographic subgroups including:
+
+- Street
+- Road
+- Main Road
+- Cross Street
+- Numbered Street
+- Numbered Cross
+- Lane
+- Avenue
+- Nagar
+- Colony
+- Layout
+- Extension
+- Residential locality
+- Sub-area
+- Village
+- Hamlet
+- Other recognised address subdivisions
+
+Support English and Tamil text, including common English abbreviations and transliterations where safe.
+
+## 5.1 Do not confuse geographic levels
+
+Maintain the hierarchy:
+
+    AREA
+      └── SUB-AREA / LOCALITY
+            └── STREET / ROAD / CROSS STREET
+                  └── INDIVIDUAL CUSTOMER RECORDS
+
+Not every name ending in Nagar or Colony should be labelled as a street.
+
+Store:
+
+- Area
+- SubArea
+- Locality
+- Street
+- StreetGroup
+- GroupType
+- OriginalAddress
+
+The `StreetGroup` field is a convenient display grouping and may represent a road, street, colony or locality, depending on the actual evidence.
+
+## 5.2 Extract address components
+
+For each customer address:
+
+1. Preserve original address.
+2. Normalise whitespace for analysis.
+3. Detect building/door/house number.
+4. Detect road/street name.
+5. Detect locality or sub-area.
+6. Detect area.
+7. Detect city/district/state only if supported.
+8. Detect valid PIN code if present.
+9. Compare with the current section heading.
+10. Produce a suggested geographic classification.
+11. Calculate confidence and issues.
+
+Never fabricate missing address components.
+
+## 5.3 Avoid incorrect matching
+
+The following must not be merged automatically:
+
+- Different numbered cross streets.
+- Different numbered roads.
+- Different residential layouts with similar names.
+- Different delivery zones sharing a base name.
+- Unrelated streets with similar spelling.
+
+Matching must preserve important numeric and directional tokens.
+
+For example, `CROSS 4` and `CROSS 5` are not equivalent.
+
+## 5.4 Ambiguous records
+
+If a street cannot be identified:
+
+- Keep the record.
+- Assign a reliable area if one exists.
+- Set street group to `UNIDENTIFIED`.
+- Mark it for review.
+- Preserve the original address.
+
+Do not invent a street assignment just to eliminate missing values.
+
+---
+
+# 6. USE RULES FIRST AND AI SECOND
+
+Create an intelligent processing pipeline that combines deterministic rules with Gemini AI.
+
+## Processing priority
+
+1. Explicit source columns.
+2. Verified worksheet section headings.
+3. User-approved area/street dictionaries.
+4. Approved aliases.
+5. Deterministic address parsing.
+6. Reliable matches from existing classifications.
+7. Gemini-assisted interpretation of ambiguous address patterns.
+8. Manual review.
+
+## 6.1 Gemini usage
+
+Use Gemini only where it adds meaningful value.
+
+Do not make an LLM call for every individual customer row.
+
+Use batching and caching for repeated ambiguous address patterns.
+
+For a unique ambiguous address, request structured output containing:
+
+- Suggested area.
+- Suggested sub-area.
+- Suggested street.
+- Geographic group type.
+- Evidence found in input.
+- Confidence.
+- Whether manual review is required.
+- Explanation.
+
+Validate AI responses through strict schemas.
+
+No AI-generated geographic value should be accepted as confirmed without supporting evidence or user approval.
+
+## 6.2 Privacy
+
+Minimise data shared with Gemini.
+
+Do not send unnecessary customer names, mobile numbers or consumer identifiers when classifying addresses.
+
+Keep Gemini API keys on the server.
+
+## 6.3 AI failure handling
+
+If Gemini is unavailable, rate-limited or returns invalid structured data:
+
+- Continue using deterministic rules.
+- Record unresolved classifications.
+- Mark affected rows for review.
+- Do not pretend that classifications succeeded.
+
+---
+
+# 7. THE MOST IMPORTANT OUTPUT: SEPARATE EXCEL FOR EVERY DETECTED GROUP
+
+Provide **three fully functional export modes**.
+
+## MODE A – AREA-WISE SEPARATE EXCEL
+
+Create one Excel workbook for each distinct area.
+
+Each area workbook contains:
+
+- Summary
+- All Records
+- Individual street/locality group sheets
+- Unidentified Street
+- Needs Review
+
+Area workbooks must preserve all customer records belonging to that area.
+
+## MODE B – STREET-WISE SEPARATE EXCEL
+
+Create a separate Excel workbook for every detected street/locality group.
+
+**This is mandatory, not optional placeholder functionality.**
+
+For example, if one area contains 15 distinct geographic subgroups, generate 15 separate Excel workbooks for those groups.
+
+If another area contains 32 subgroups, generate 32 separate workbooks.
+
+Do not combine every street into a single output file when street-wise export is requested.
+
+Every generated workbook must contain its corresponding customer records.
+
+Distinguish identical street names that occur in different areas using the area grouping and safe filenames.
+
+## MODE C – COMPLETE COMBINED EXPORT
+
+Generate both:
+
+- Area-wise workbooks.
+- Street/locality-wise workbooks.
+
+Package everything into one ZIP.
+
+**Set MODE C as the default export mode.**
+
+Allow users to select any of the three modes.
+
+---
+
+# 8. EXPECTED ZIP FOLDER STRUCTURE
+
+The downloaded ZIP should follow this structure:
+
+    STRUCTIQ_STRUCTURED_EXPORT.zip
+    │
+    ├── AREA_SUMMARY.xlsx
+    ├── PROCESSING_REPORT.xlsx
+    ├── NEEDS_REVIEW.xlsx
+    ├── ROW_AUDIT.xlsx
+    │
+    ├── AREA_WISE/
+    │    ├── AREA_001.xlsx
+    │    ├── AREA_002.xlsx
+    │    ├── AREA_003.xlsx
+    │    └── ...dynamic area names
+    │
+    └── STREET_WISE/
+         ├── AREA_001/
+         │    ├── STREET_GROUP_001.xlsx
+         │    ├── STREET_GROUP_002.xlsx
+         │    ├── STREET_GROUP_003.xlsx
+         │    └── ...
+         │
+         ├── AREA_002/
+         │    ├── STREET_GROUP_001.xlsx
+         │    ├── STREET_GROUP_002.xlsx
+         │    └── ...
+         │
+         └── ...
+
+The labels above are placeholders illustrating the directory structure.
+
+Actual exported filenames must use the dynamically detected, safely sanitised geographic names rather than generic numbering wherever practical.
+
+Add collision-safe suffixes when necessary.
+
+**Do not create empty or fake Excel workbooks.**
+
+Unassigned records and unidentified street groups must be preserved in clearly labelled output files.
+
+---
+
+# 9. PROFESSIONAL EXCEL OUTPUT FORMAT
+
+The exported Excel files should visually resemble the supplied structured reference.
+
+## 9.1 Area workbook
+
+Include:
+
+**Summary worksheet**
+
+Display:
+
+- Area name.
+- Total customers.
+- Distinct street/locality groups.
+- Customer count per group.
+- Unidentified street count.
+- Needs review count.
+- Processing date.
+
+**All Records worksheet**
+
+Contain every customer belonging to the area.
+
+**Individual street/locality worksheets**
+
+Each worksheet contains only customers belonging to that group.
+
+## 9.2 Street-level workbook
+
+Every street/locality workbook should include:
+
+- A clear group title.
+- Parent area.
+- Street/locality name.
+- Customer count.
+- Properly formatted column headers.
+- All original customer columns.
+- Relevant structured classification fields.
+- Customer records belonging to that group.
+
+## 9.3 Preserve original columns
+
+Never discard source columns such as:
+
+- Consumer identifiers.
+- Customer number.
+- Customer name.
+- Mobile number.
+- Distributor information.
+- Address.
+- AreaName.
+- Any additional source columns.
+
+The source workbook's column names may differ.
+
+Support configurable column ordering, while keeping all original fields accessible.
+
+Additional derived columns may include:
+
+- DetectedArea
+- DetectedSubArea
+- DetectedStreet
+- StreetGroup
+- GroupType
+- OriginalSheet
+- OriginalRow
+- ClassificationSource
+- ClassificationConfidence
+- ReviewStatus
+- ReviewReason
+
+Do not overwrite original customer values with inferred data.
+
+## 9.4 Grouped presentation
+
+Provide a `Structured_View` worksheet that displays customer records arranged in blocks beneath clearly visible geographic headings, similar to the supplied screenshot.
+
+For example:
+
+    STREET / LOCALITY GROUP A
+    Customer 1
+    Customer 2
+    Customer 3
+
+    STREET / LOCALITY GROUP B
+    Customer 4
+    Customer 5
+
+    STREET / LOCALITY GROUP C
+    Customer 6
+    Customer 7
+
+This is a presentation worksheet.
+
+Keep a separate machine-readable `All_Records` worksheet without decorative heading rows so data can be filtered, counted and reused reliably.
+
+## 9.5 Formatting requirements
+
+Use:
+
+- Professional navy blue group headings.
+- Bold white header text where appropriate.
+- Clean white backgrounds.
+- Light alternating row colours.
+- Thin cell borders.
+- Readable column widths.
+- Wrap text for long addresses.
+- Frozen column headers.
+- Auto-filters on tabular sheets.
+- Consistent font.
+- Proper customer/consumer number formatting.
+- Proper phone number formatting.
+- Clear separation between different street groups.
+
+Avoid merged cells within machine-readable tables.
+
+Use merged title cells only in presentation or summary sections where they do not interfere with filtering.
+
+## 9.6 Numeric data preservation
+
+This is critically important.
+
+Excel files may contain very long consumer identifiers displayed in scientific notation.
+
+Consumer IDs, account numbers, phone numbers and reference numbers must be treated as text identifiers.
+
+Do not convert them to floating-point numbers.
+
+Preserve leading zeros.
+
+Do not truncate long identifiers.
+
+If the source workbook has already stored a long identifier as an imprecise Excel number, do not invent the missing digits.
+
+Flag the precision-loss issue clearly in the processing report.
+
+Preserve the original stored value and any available display representation separately.
+
+---
+
+# 10. EXACT DATA INTEGRITY REQUIREMENTS
+
+This platform will process real customer and business data.
+
+**Zero silent customer-record loss is mandatory.**
+
+For every import, calculate:
+
+- Total physical source rows.
+- Header rows.
+- Section-heading rows.
+- Empty separator rows.
+- Valid customer records.
+- Invalid/problematic customer records.
+- Other non-customer rows requiring review.
+
+Ensure that these row-type counts reconcile to the total physical rows examined.
+
+For actual customer records:
+
+    TOTAL CUSTOMER RECORDS
+        =
+    RECORDS ASSIGNED TO AREAS
+        +
+    RECORDS WITH UNASSIGNED AREAS
+
+Within an area:
+
+    TOTAL AREA CUSTOMER RECORDS
+        =
+    RECORDS ASSIGNED TO STREET/LOCALITY GROUPS
+        +
+    UNIDENTIFIED STREET RECORDS
+
+Every customer record must appear exactly once in its applicable main partition.
+
+Do not accidentally count headings as customers.
+
+Do not accidentally delete records with missing phone numbers.
+
+Do not automatically remove duplicates.
+
+Do not silently discard rows with incomplete addresses.
+
+If a customer needs review, preserve that customer in the appropriate review output.
+
+The processing report must identify any irrecoverable source-data problems.
+
+---
+
+# 11. DATA CLEANING ENGINE
+
+Implement or improve:
+
+- Whitespace normalisation.
+- Safe case normalisation.
+- Address component extraction.
+- Street name standardisation.
+- Locality normalisation.
+- Phone validation.
+- PIN code validation.
+- Duplicate detection.
+- Missing field detection.
+- Invalid field identification.
+- Ambiguous classification detection.
+
+Keep original and cleaned values separate.
+
+Do not automatically rewrite legitimate personal names or uncommon street spellings.
+
+Tamil and other Unicode text must be preserved.
+
+---
+
+# 12. DUPLICATE DETECTION
+
+Detect:
+
+- Exact duplicate customer records.
+- Duplicate consumer numbers.
+- Matching phones.
+- Similar name and address pairs.
+- Potential cross-area duplicates.
+
+Use efficient matching techniques to support large datasets.
+
+Flag suspected duplicates rather than deleting them.
+
+Provide a review workflow where users can confirm or reject suggested duplicates.
+
+Any merging must be explicit, audited and reversible where supported.
+
+---
+
+# 13. AREA & STREET CLASSIFICATION PREVIEW
+
+Before exporting, provide a clear preview.
+
+Example structure:
+
+    UPLOAD COMPLETE
+
+    Total Customer Records: [Actual Count]
+
+    Detected Areas: [Actual Count]
+
+    Detected Street/Locality Groups: [Actual Count]
+
+    Needs Review: [Actual Count]
+
+    AREA 1
+       Street Group A – [Count]
+       Street Group B – [Count]
+       Street Group C – [Count]
+
+    AREA 2
+       Street Group D – [Count]
+       Street Group E – [Count]
+
+    UNASSIGNED
+       Unknown Area – [Count]
+
+All counts must be calculated from real processing results.
+
+Allow users to expand an area and inspect its corresponding streets and customers.
+
+Provide actions to:
+
+- Edit an area.
+- Reassign a customer.
+- Correct a street.
+- Merge approved equivalent labels.
+- Split an incorrect group.
+- Approve a classification.
+- Export a single area.
+- Export a single street.
+- Export everything.
+
+Update all relevant totals after a correction.
+
+---
+
+# 14. FRONTEND USER WORKFLOW
+
+The completed user experience must be:
+
+**Step 1 – Upload Excel**
+
+The user chooses an Excel or CSV file.
+
+**Step 2 – Preview**
+
+Display source columns, worksheet names, row counts and a representative record preview.
+
+**Step 3 – Column Mapping**
+
+Automatically detect customer ID, name, phone, address and area fields.
+
+Allow corrections.
+
+**Step 4 – Analyse Every Row**
+
+Inspect each physical row and detect customer records, section headings and other row types.
+
+**Step 5 – Extract Area & Street Information**
+
+Run deterministic parsing, section-context analysis and AI assistance where necessary.
+
+**Step 6 – Categorisation Preview**
+
+Display dynamically detected areas, street groups and record counts.
+
+**Step 7 – Review Issues**
+
+Allow correction of ambiguous or conflicting classifications.
+
+**Step 8 – Select Export Type**
+
+Options:
+
+- Area-wise Excel
+- Street-wise Excel
+- Complete Combined Export
+
+**Step 9 – Generate Excel Files**
+
+Generate actual Excel workbooks on the backend.
+
+**Step 10 – Generate ZIP**
+
+Package the completed workbooks.
+
+**Step 11 – Download**
+
+Provide a working `Download ZIP` button.
+
+**Step 12 – Verify**
+
+Allow the user to view summary counts and export history.
+
+No screen should show simulated exports or fake processing statistics.
+
+---
+
+# 15. FRONTEND DESIGN
+
+Retain the existing StructIQ UI and improve it without rebuilding unnecessarily.
+
+Recommended design:
+
+- Primary navy: `#0B2545`
+- Action blue: `#2563EB`
+- Background: `#F5F7FB`
+- Cards: `#FFFFFF`
+- Text: `#0F172A`
+- Muted text: `#64748B`
+- Borders: `#E2E8F0`
+- Success: `#16A34A`
+- Warning: `#D97706`
+- Error: `#DC2626`
+- Font: Inter
+
+Build or update these functional pages:
+
+1. Dashboard
+2. Upload Data
+3. Excel Preview
+4. Column Mapping
+5. Processing Progress
+6. Area Categorisation
+7. Street Categorisation
+8. Customer Records
+9. Review & Corrections
+10. Duplicate Detection
+11. Export Center
+12. Upload History
+13. Export History
+14. Settings
+
+Do not duplicate existing working screens.
+
+Each control must be connected to actual application state and backend functionality.
+
+---
+
+# 16. TECHNOLOGY REQUIREMENTS
+
+Preserve the existing technology stack wherever possible.
+
+The original architecture uses:
+
+### Frontend
+
+- React
+- TypeScript
+- Vite
+- Tailwind CSS
+
+### Backend
+
+- Node.js
+- Express
+- TypeScript
+- REST APIs
+- Zod validation
+
+### Database
+
+- PostgreSQL
+- Existing Prisma/SQL data-access layer
+
+### Excel Processing
+
+- Existing SheetJS/xlsx parser
+- ExcelJS for output generation
+- Streaming where supported
+- Appropriate CSV parsing
+
+### AI
+
+- Google Gemini
+- Server-side Gemini API integration
+- Rule-based processing first
+- Batch AI classification second
+
+### Background Jobs
+
+- Existing PostgreSQL-backed job queue where implemented
+- Chunked processing
+- Progress tracking
+- Retry and failure states
+
+### Storage
+
+- Existing secure storage adapter
+- Google Cloud Storage where configured
+- Local storage for development only
+
+Do not unnecessarily change backend frameworks or add a second processing architecture.
+
+Use existing modules and extend them.
+
+Before selecting a library for Excel generation, verify its compatibility with the existing runtime and required streaming capabilities.
+
+---
+
+# 17. BACKEND MODULE REQUIREMENTS
+
+Implement or extend appropriate modules:
+
+### UploadService
+
+Handles uploaded files, validation, worksheets and previews.
+
+### ExcelParserService
+
+Reads all physical rows and preserves values, cell types, formatting metadata and source row numbers where supported.
+
+### RowClassificationService
+
+Distinguishes customer records from section headings and separators.
+
+### AddressIntelligenceService
+
+Extracts address components.
+
+### AreaDetectionService
+
+Determines area assignments.
+
+### StreetClassificationService
+
+Detects street/locality groups.
+
+### SectionContextService
+
+Tracks and validates section-heading context.
+
+### CleaningService
+
+Normalises data without destroying originals.
+
+### DuplicateService
+
+Detects likely duplicates.
+
+### ReviewService
+
+Handles corrections and approvals.
+
+### AreaExcelExportService
+
+Generates area-specific workbooks.
+
+### StreetExcelExportService
+
+Generates street/locality-specific workbooks.
+
+### ZipExportService
+
+Packages files into ZIP archives.
+
+### ProcessingJobService
+
+Runs and tracks asynchronous work.
+
+### AuditService
+
+Records important user and classification changes.
+
+**These names are conceptual. Reuse existing service names and module boundaries where sensible.**
+
+---
+
+# 18. DATABASE REQUIREMENTS
+
+Inspect the existing database schema first.
+
+Do not duplicate existing tables.
+
+Ensure the system can persist:
+
+### Uploaded Files
+
+- Upload ID
+- File name
+- File hash
+- File size
+- Upload status
+- User ID
+- Upload date
+
+### Source Rows
+
+- Upload ID
+- Worksheet ID
+- Physical row number
+- Original values
+- Row type
+- Heading context
+- Source formatting indicators where relevant
+
+### Customer Records
+
+- Stable internal record ID
+- Raw source row reference
+- Original customer fields
+- Cleaned fields
+- Detected geographic fields
+- Validation issues
+
+### Area Classifications
+
+- Area ID
+- Original area
+- Canonical area
+- Confidence
+- Classification source
+- Review status
+
+### Street / Locality Classifications
+
+- Parent area ID
+- Street group ID
+- Original street or locality label
+- Canonical label
+- Group type
+- Source section heading
+- Confidence
+- Review status
+
+### Export Jobs
+
+- Export ID
+- Upload ID
+- Export mode
+- Status
+- Progress
+- Export file paths
+- Created timestamp
+- Completed timestamp
+- Error status
+
+### Audit Records
+
+- User
+- Action
+- Record
+- Previous classification
+- New classification
+- Timestamp
+
+Use proper database constraints and indexes.
+
+Perform safe migrations and preserve existing stored records.
+
+---
+
+# 19. PERFORMANCE REQUIREMENTS
+
+The engine must be designed for:
+
+- 1,000 rows
+- 5,000 rows
+- 10,000 rows
+- 50,000 rows
+- 100,000+ rows
+
+Use:
+
+- Chunked processing.
+- Background jobs.
+- Memory-conscious parsing.
+- Batched database writes.
+- Indexed lookups.
+- Server-side pagination.
+- Streaming Excel output where supported.
+- Controlled ZIP generation.
+- Caching of repeated address classifications.
+- Minimal Gemini usage.
+
+Do not freeze the frontend during processing.
+
+Do not load all generated workbooks into memory when streaming or temporary-file approaches are possible.
+
+Allow long-running jobs to show accurate progress and failure states.
+
+If the runtime cannot support a specific scale, state the tested limits instead of claiming unlimited scalability.
+
+---
+
+# 20. IMPORTANT EXCEL EDGE CASES
+
+Handle:
+
+1. Multiple worksheets.
+2. Blank rows between customer groups.
+3. Merged section headings.
+4. Bold and centered section headings.
+5. Repeated section names.
+6. Customer rows with missing mobile numbers.
+7. Customer rows with missing addresses.
+8. Customer addresses conflicting with section headings.
+9. Same street name under different areas.
+10. Similar but different street names.
+11. Area names containing numbers or hyphens.
+12. Long consumer identifiers.
+13. Phone numbers stored as numeric cells.
+14. Scientific notation.
+15. Tamil address text.
+16. Duplicate source records.
+17. Extra unknown columns.
+18. Different column orders.
+19. Missing AreaName columns.
+20. Missing street information.
+21. Invalid customer records.
+22. Huge numbers of street groups.
+23. Long Excel worksheet names.
+24. Invalid characters in filenames.
+25. Repeated street labels in different source sections.
+26. Rows that resemble headings but contain actual customer data.
+27. Hidden rows and filtered rows.
+28. Formulas in source cells.
+29. Multiple customer records sharing the same address.
+30. Partially formatted or inconsistent source files.
+
+For hidden or filtered rows, define and expose whether the user wants all physical data rows or only visible rows. Default to all physical data rows.
+
+Do not evaluate untrusted spreadsheet formulas as executable instructions.
+
+Protect generated exports against Excel formula injection.
+
+---
+
+# 21. REQUIRED QUALITY ASSURANCE TESTS
+
+Create repeatable automated tests and perform real end-to-end tests.
+
+### TEST A – One Area, Multiple Streets
+
+Input:
+
+One area containing several distinct streets and localities.
+
+Expected:
+
+- One area workbook.
+- Multiple individual street workbooks.
+- All customer records assigned or marked for review.
+- No missing customer records.
+
+### TEST B – Multiple Areas
+
+Input:
+
+Many dynamically named areas, each with several street groups.
+
+Expected:
+
+- One workbook per area.
+- One workbook per detected street group.
+- Correct ZIP structure.
+- Correct counts.
+
+### TEST C – Existing Section Headings
+
+Input:
+
+An Excel file containing section-heading rows between customer records.
+
+Expected:
+
+- Section headings detected.
+- Section headings not counted as customers.
+- Customer records grouped appropriately.
+- Conflicting addresses flagged.
+- Original source row numbers preserved.
+
+### TEST D – No Section Headings
+
+Input:
+
+A mixed customer Excel file with only customer records and full addresses.
+
+Expected:
+
+- Groups detected using address fields and approved rules.
+- Gemini used only where needed.
+- Ambiguous addresses marked for review.
+- Correctly structured output.
+
+### TEST E – Scientific Notation
+
+Input:
+
+Long numeric consumer identifiers.
+
+Expected:
+
+- Text identifiers remain intact where source precision exists.
+- No invented lost digits.
+- Precision-loss issues reported.
+
+### TEST F – Row Preservation
+
+Input:
+
+A mixture of customer rows, headings, separators and invalid rows.
+
+Expected:
+
+- Every physical row audited.
+- All customer records accounted for.
+- Headings excluded from customer counts.
+- Correct reconciliation totals.
+
+### TEST G – ZIP Download
+
+Input:
+
+A successfully processed Excel file.
+
+Expected:
+
+- Actual ZIP generated.
+- ZIP downloads successfully.
+- ZIP opens.
+- Every expected Excel file exists.
+- All generated workbooks open.
+
+### TEST H – Review Corrections
+
+Input:
+
+A record with a conflicting area or street classification.
+
+Expected:
+
+- User can correct it.
+- Database updates.
+- Group counts update.
+- Regenerated exports reflect the correction.
+
+### TEST I – Regression
+
+Expected:
+
+- Existing login works.
+- Existing upload workflow works.
+- Existing dashboards remain usable.
+- Existing stored records are preserved.
+- Existing valid APIs continue working.
+
+### TEST J – Export Reconciliation
+
+Programmatically verify that:
+
+- Source customer count matches categorised customer count.
+- Area partition counts reconcile.
+- Street-group partition counts reconcile.
+- Generated workbook rows match expected records.
+- No unintended duplicates or omissions exist.
+
+---
+
+# 22. CRITICAL SECURITY REQUIREMENTS
+
+Maintain:
+
+- Server-side authentication.
+- Role-based permissions.
+- Secure upload validation.
+- File type restrictions.
+- Upload size limits.
+- Spreadsheet decompression protections.
+- Proper database access controls.
+- Safe server-side API keys.
+- Private customer data storage.
+- Secure download access.
+- Safe ZIP file generation.
+- Export formula-injection prevention.
+- Audit logging.
+- No unnecessary PII in logs.
+- Appropriate file retention and cleanup.
+
+Do not expose customer information publicly.
+
+---
+
+# 23. EXISTING PROJECT UPGRADE PLAN
+
+Follow this implementation order.
+
+## PHASE 1 – ANALYSE EXISTING CODE
+
+- Inspect project.
+- Identify functional components.
+- Identify missing features.
+- Identify relevant backend routes.
+- Inspect existing Excel processing code.
+- Inspect existing export code.
+- Identify runtime limitations.
+- Preserve everything working.
+
+Give a short audit, then begin implementation.
+
+## PHASE 2 – BUILD ROW INTELLIGENCE
+
+- Inspect every physical row.
+- Detect section headings.
+- Distinguish customer rows.
+- Preserve row metadata.
+- Add row audit functionality.
+
+## PHASE 3 – BUILD GEOGRAPHIC CLASSIFICATION
+
+- Area detection.
+- Street/locality extraction.
+- Section-heading context.
+- Address matching.
+- Classification confidence.
+- Unknown group handling.
+- Manual correction support.
+
+## PHASE 4 – GENERATE SEPARATE EXCEL FILES
+
+- Area-level workbooks.
+- Street-level workbooks.
+- Summary sheets.
+- Structured view sheets.
+- Professionally formatted records.
+- Review files.
+
+## PHASE 5 – ZIP GENERATION
+
+- Dynamic folders.
+- File creation.
+- ZIP packaging.
+- Download API.
+- Export progress.
+- Export history.
+
+## PHASE 6 – FRONTEND INTEGRATION
+
+- Area categorisation view.
+- Street categorisation view.
+- Row analysis summary.
+- Export mode controls.
+- Preview and correction.
+- Real download button.
+
+## PHASE 7 – TESTING AND STABILISATION
+
+- Verify output file integrity.
+- Verify every customer record.
+- Verify correct grouping.
+- Verify summary counts.
+- Test edge cases.
+- Test security.
+- Test large datasets.
+- Fix broken features.
+
+Continue across phases without waiting for confirmation when implementation can proceed safely.
+
+---
+
+# 24. STRICT DEVELOPMENT RULES
+
+1. Do not create a brand-new project.
+2. Do not remove existing working features.
+3. Do not hardcode geographic names.
+4. Do not use fixed street lists.
+5. Do not assume AreaName alone determines the full classification.
+6. Analyse every physical Excel row.
+7. Identify section headings separately from customers.
+8. Preserve source values.
+9. Never invent customer details.
+10. Never invent streets or areas without evidence.
+11. Never silently discard records.
+12. Never silently merge customer records.
+13. Do not use fake progress indicators.
+14. Do not use fake generated Excel files.
+15. Do not use dummy ZIP download links.
+16. Do not show fictional processing statistics.
+17. Do not mark untested features as complete.
+18. Preserve customer IDs without numeric corruption.
+19. Ensure area-wise and street-wise Excel separation both work.
+20. Make the real end-to-end workflow the highest priority.
+
+---
+
+# 25. REQUIRED FINAL IMPLEMENTATION REPORT
+
+After implementing each stage, report:
+
+**Completed Features**
+
+What actually works.
+
+**Files Modified**
+
+Created and updated project files.
+
+**Database Changes**
+
+Any migrations or schema additions.
+
+**API Integrations**
+
+Which real APIs are connected.
+
+**Test Results**
+
+| Feature | Implemented | Tested | Status |
+|---|---|---|---|
+| Row-by-row analysis | | | |
+| Section heading detection | | | |
+| Area identification | | | |
+| Street classification | | | |
+| Area-wise Excel export | | | |
+| Street-wise Excel export | | | |
+| ZIP download | | | |
+| Record reconciliation | | | |
+| Manual corrections | | | |
+| Existing feature regression | | | |
+
+Only report tested features as tested.
+
+**Remaining Issues**
+
+List known bugs and incomplete functionality.
+
+**Verification Steps**
+
+Explain how to upload a real Excel and check the generated ZIP files.
+
+---
+
+# 26. FINAL DEFINITION OF DONE
+
+The application is complete for this requirement only when a user can:
+
+1. Upload any supported Excel containing mixed customer data.
+2. Allow the application to examine every row.
+3. Detect section headings and customer records.
+4. Identify all represented geographic areas.
+5. Identify all supported street/locality groups.
+6. Validate customer addresses against group headings.
+7. Preserve all original customer details.
+8. Review uncertain classifications.
+9. See accurate counts for every area and street.
+10. Generate individual area Excel files.
+11. Generate individual street/locality Excel files.
+12. Receive professionally structured Excel workbooks.
+13. Download all generated files in a single ZIP.
+14. Open and verify every generated workbook.
+15. Confirm that no customer records were unintentionally lost.
+
+**The screenshot demonstrates the grouping presentation that the software must be able to produce.**
+
+The geographic headings, area names, street names and counts must be dynamically extracted from the real uploaded Excel.
+
+## FINAL COMMAND
+
+Analyse the existing StructIQ project immediately.
+
+Preserve existing code and architecture.
+
+Implement the missing intelligent row-by-row Excel categorisation system, prioritising section-heading detection, individual customer address analysis, accurate geographic classification, separate area-wise Excel files, separate street-wise Excel files and real ZIP generation.
+
+Do not stop after a plan or a UI mockup.
+
+Implement actual code, connect the frontend and backend, test the generated files and provide a truthful report of completed and pending work.
+
+**TOP PRIORITY: Every uploaded customer row must be accurately accounted for, every identifiable geographic subgroup must be correctly organised, and every requested area/street must have its own downloadable Excel output.**

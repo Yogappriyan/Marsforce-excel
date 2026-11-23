@@ -1,0 +1,6 @@
+{
+  "name": "StructIQ",
+  "description": "Enterprise AI Data Structuring Platform for ingesting, parsing, cleaning, categorising, deduplicating, reviewing, and exporting large-scale messy datasets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

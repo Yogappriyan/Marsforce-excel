@@ -1,0 +1,321 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Publicly safe user profile document without PII.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID matching document ID.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display name shown in backup vault UI.",
+          "minLength": 0,
+          "maxLength": 160
+        },
+        "role": {
+          "type": "string",
+          "description": "Application vault role.",
+          "enum": ["user", "admin"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last-update timestamp."
+        }
+      },
+      "required": ["uid", "displayName", "role", "createdAt", "updatedAt"]
+    },
+    "UserPrivatePii": {
+      "title": "UserPrivatePii",
+      "description": "Isolated user PII subcollection document containing verified email.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Verified user email address.",
+          "minLength": 3,
+          "maxLength": 320
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "createdAt", "updatedAt"]
+    },
+    "ExcelUploadRecord": {
+      "title": "ExcelUploadRecord",
+      "description": "Immutable-hash metadata record for an uploaded Excel or CSV workbook stored in StructIQ Firestore Vault.",
+      "type": "object",
+      "properties": {
+        "uploadId": {
+          "type": "string",
+          "description": "StructIQ backend upload UUID.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ownerUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the uploader.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "originalFilename": {
+          "type": "string",
+          "description": "Sanitized original Excel or CSV filename.",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "fileExtension": {
+          "type": "string",
+          "description": "Validated spreadsheet extension.",
+          "enum": [".xlsx", ".xls", ".csv"]
+        },
+        "fileSizeBytes": {
+          "type": "integer",
+          "description": "Original file byte length."
+        },
+        "fileSha256": {
+          "type": "string",
+          "description": "64-hex SHA-256 checksum of original file bytes.",
+          "pattern": "^[a-f0-9]{64}$",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "detectedEncoding": {
+          "type": "string",
+          "description": "Detected CSV character encoding or workbook type.",
+          "minLength": 0,
+          "maxLength": 32
+        },
+        "totalRows": {
+          "type": "integer",
+          "description": "Total non-empty data rows across worksheets."
+        },
+        "sheetCount": {
+          "type": "integer",
+          "description": "Number of backed-up worksheets."
+        },
+        "chunkCount": {
+          "type": "integer",
+          "description": "Number of chunk documents containing raw spreadsheet rows."
+        },
+        "localStatus": {
+          "type": "string",
+          "description": "Workflow state in StructIQ when backed up.",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "isArchived": {
+          "type": "boolean",
+          "description": "Soft-archive flag (hard delete is disabled to prevent data loss)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uploadId",
+        "ownerUid",
+        "originalFilename",
+        "fileExtension",
+        "fileSizeBytes",
+        "fileSha256",
+        "detectedEncoding",
+        "totalRows",
+        "sheetCount",
+        "chunkCount",
+        "localStatus",
+        "isArchived",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ExcelUploadSheet": {
+      "title": "ExcelUploadSheet",
+      "description": "Worksheet schema and header metadata under an ExcelUploadRecord.",
+      "type": "object",
+      "properties": {
+        "uploadId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "sheetIndex": {
+          "type": "integer"
+        },
+        "sheetName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "rowCount": {
+          "type": "integer"
+        },
+        "physicalRowCount": {
+          "type": "integer"
+        },
+        "headerRowNumber": {
+          "type": "integer"
+        },
+        "headers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 160
+          }
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uploadId",
+        "ownerUid",
+        "sheetIndex",
+        "sheetName",
+        "rowCount",
+        "physicalRowCount",
+        "headerRowNumber",
+        "headers",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ExcelRowChunk": {
+      "title": "ExcelRowChunk",
+      "description": "Immutable batch of up to 80 native spreadsheet row maps under an ExcelUploadRecord.",
+      "type": "object",
+      "properties": {
+        "uploadId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "sheetIndex": {
+          "type": "integer"
+        },
+        "sheetName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "chunkIndex": {
+          "type": "integer"
+        },
+        "rowCount": {
+          "type": "integer"
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "rowNumber": { "type": "integer" },
+              "cells": { "type": "object" }
+            },
+            "required": ["rowNumber", "cells"]
+          }
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uploadId",
+        "ownerUid",
+        "sheetIndex",
+        "sheetName",
+        "chunkIndex",
+        "rowCount",
+        "rows",
+        "createdAt"
+      ]
+    },
+    "AdminEntry": {
+      "title": "AdminEntry",
+      "description": "Verified administrator UID marker document.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Safe user profile keyed by Firebase UID."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivatePii" },
+      "description": "Isolated PII subcollection storing user email."
+    },
+    "/uploads/{uploadId}": {
+      "schema": { "$ref": "#/entities/ExcelUploadRecord" },
+      "description": "Backed-up Excel/CSV upload metadata owned by uploader."
+    },
+    "/uploads/{uploadId}/sheets/{sheetId}": {
+      "schema": { "$ref": "#/entities/ExcelUploadSheet" },
+      "description": "Worksheet metadata under a backed-up upload."
+    },
+    "/uploads/{uploadId}/rowChunks/{chunkId}": {
+      "schema": { "$ref": "#/entities/ExcelRowChunk" },
+      "description": "Immutable native row chunks (max 80 rows per doc) under a backed-up upload."
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminEntry" },
+      "description": "Admin UID registry."
+    }
+  }
+}
