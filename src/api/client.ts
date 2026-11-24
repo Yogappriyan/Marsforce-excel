@@ -1,52 +1,17 @@
 const rawBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) || '';
 export const API_BASE_URL = rawBase.replace(/\/+$/, '');
 
-const ACCESS_KEY = 'marsforce_access_token';
-const REFRESH_KEY = 'marsforce_refresh_token';
-const LEGACY_ACCESS_KEY = 'structiq_access_token';
-const LEGACY_REFRESH_KEY = 'structiq_refresh_token';
-
 let memAccessToken: string | null = null;
 let memRefreshToken: string | null = null;
 let authGeneration = 0;
 let unauthorizedHandler: (() => void) | null = null;
 
-function readStorage(key: string, legacyKey?: string): string | null {
-  try {
-    const val = window.sessionStorage.getItem(key);
-    if (val) return val;
-    if (legacyKey) {
-      const legacy = window.sessionStorage.getItem(legacyKey);
-      if (legacy) {
-        window.sessionStorage.setItem(key, legacy);
-        window.sessionStorage.removeItem(legacyKey);
-        return legacy;
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function writeStorage(key: string, val: string | null, legacyKey?: string) {
-  try {
-    if (val) window.sessionStorage.setItem(key, val);
-    else window.sessionStorage.removeItem(key);
-    if (legacyKey) window.sessionStorage.removeItem(legacyKey);
-  } catch {
-    // Ignore storage restrictions
-  }
-}
-
 export function setClientAuthTokens(accessToken?: string | null, refreshToken?: string | null) {
   if (accessToken !== undefined) {
     memAccessToken = accessToken || null;
-    writeStorage(ACCESS_KEY, memAccessToken, LEGACY_ACCESS_KEY);
   }
   if (refreshToken !== undefined) {
     memRefreshToken = refreshToken || null;
-    writeStorage(REFRESH_KEY, memRefreshToken, LEGACY_REFRESH_KEY);
   }
   if (accessToken || refreshToken) {
     authGeneration++;
@@ -57,16 +22,14 @@ export function clearClientAuthTokens() {
   memAccessToken = null;
   memRefreshToken = null;
   authGeneration++;
-  writeStorage(ACCESS_KEY, null, LEGACY_ACCESS_KEY);
-  writeStorage(REFRESH_KEY, null, LEGACY_REFRESH_KEY);
 }
 
 export function getAccessToken(): string | null {
-  return memAccessToken || readStorage(ACCESS_KEY, LEGACY_ACCESS_KEY);
+  return memAccessToken;
 }
 
 export function getRefreshToken(): string | null {
-  return memRefreshToken || readStorage(REFRESH_KEY, LEGACY_REFRESH_KEY);
+  return memRefreshToken;
 }
 
 export function getAuthHeaders(): Record<string, string> {
@@ -90,9 +53,11 @@ export class ApiError extends Error {
   }
 }
 
-let refreshPromise: Promise<boolean> | null = null;
+type RefreshResult = 'ok' | 'unauthorized' | 'error';
 
-async function tryRefreshSession(): Promise<boolean> {
+let refreshPromise: Promise<RefreshResult> | null = null;
+
+async function tryRefreshSession(): Promise<RefreshResult> {
   if (!refreshPromise) {
     const reqGeneration = authGeneration;
     const rt = getRefreshToken();
@@ -102,12 +67,13 @@ async function tryRefreshSession(): Promise<boolean> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(rt ? { refreshToken: rt } : {}),
     })
-      .then(async (res) => {
+      .then(async (res): Promise<RefreshResult> => {
         if (!res.ok) {
-          if (res.status === 401 && reqGeneration === authGeneration) {
+          if ((res.status === 401 || res.status === 403) && reqGeneration === authGeneration) {
             clearClientAuthTokens();
+            return 'unauthorized';
           }
-          return false;
+          return 'error';
         }
         try {
           const data = await res.json();
@@ -117,9 +83,9 @@ async function tryRefreshSession(): Promise<boolean> {
         } catch {
           // Ignore non-JSON refresh payload
         }
-        return true;
+        return 'ok';
       })
-      .catch(() => false)
+      .catch((): RefreshResult => 'error')
       .finally(() => {
         refreshPromise = null;
       });
@@ -157,12 +123,15 @@ export async function apiRequest<T>(
       return apiRequest<T>(path, { ...options, skipAutoRefresh: true });
     }
     if (!skipAutoRefresh) {
-      const refreshed = await tryRefreshSession();
-      if (refreshed || reqGeneration !== authGeneration) {
+      const refreshResult = await tryRefreshSession();
+      if (refreshResult === 'ok' || reqGeneration !== authGeneration) {
         return apiRequest<T>(path, { ...options, skipAutoRefresh: true });
       }
-    }
-    if (reqGeneration === authGeneration) {
+      if (refreshResult === 'unauthorized' && reqGeneration === authGeneration) {
+        clearClientAuthTokens();
+        unauthorizedHandler?.();
+      }
+    } else if (reqGeneration === authGeneration) {
       clearClientAuthTokens();
       unauthorizedHandler?.();
     }
@@ -200,14 +169,13 @@ export async function downloadAuthenticatedFile(path: string, fallbackFilename: 
     if (reqGeneration !== authGeneration) {
       res = await doFetch();
     } else {
-      const refreshed = await tryRefreshSession();
-      if (refreshed || reqGeneration !== authGeneration) {
+      const refreshResult = await tryRefreshSession();
+      if (refreshResult === 'ok' || reqGeneration !== authGeneration) {
         res = await doFetch();
+      } else if (res.status === 401 && refreshResult === 'unauthorized' && reqGeneration === authGeneration) {
+        clearClientAuthTokens();
+        unauthorizedHandler?.();
       }
-    }
-    if (res.status === 401 && reqGeneration === authGeneration) {
-      clearClientAuthTokens();
-      unauthorizedHandler?.();
     }
   }
   if (!res.ok) {

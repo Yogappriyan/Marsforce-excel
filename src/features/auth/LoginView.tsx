@@ -13,7 +13,7 @@ interface AuthResponse {
 }
 
 export function LoginView() {
-  const { needsInitialSetup, setUserDirect } = useAuth();
+  const { needsInitialSetup, vercelEphemeralWarning, setUserDirect } = useAuth();
   const { theme, toggleTheme } = useTheme();
 
   const [email, setEmail] = useState('');
@@ -93,6 +93,12 @@ export function LoginView() {
             ? 'No administrator exists yet. Create the primary Super Admin account to initialize this workspace.'
             : 'Enter your corporate credentials to access the data structuring pipeline.'}
         </p>
+
+        {vercelEphemeralWarning && (
+          <div className="mb-5 p-3 rounded-lg border border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/30 text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
+            Vercel serverless mode needs <code className="font-semibold">DATABASE_URL</code> (or <code className="font-semibold">POSTGRES_URL</code>) and <code className="font-semibold">SESSION_SECRET</code> in Vercel Project Environment Variables so sessions persist across serverless instances.
+          </div>
+        )}
 
         {error && (
           <div

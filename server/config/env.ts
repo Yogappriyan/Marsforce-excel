@@ -33,11 +33,12 @@ const EnvSchema = z.object({
 
 const parsed = EnvSchema.parse(process.env);
 
-const ephemeralSessionFallback = !parsed.SESSION_SECRET ? crypto.randomBytes(32).toString('hex') : '';
+const explicitSessionSecret = (parsed.SESSION_SECRET || parsed.REFRESH_SECRET).trim();
+const ephemeralSessionFallback = !explicitSessionSecret ? crypto.randomBytes(32).toString('hex') : '';
 const ephemeralRefreshFallback = !parsed.REFRESH_SECRET ? crypto.randomBytes(32).toString('hex') : '';
 
-if (parsed.NODE_ENV === 'production' && (!parsed.SESSION_SECRET || !parsed.REFRESH_SECRET)) {
-  console.warn('[MARSFORCE] SESSION_SECRET or REFRESH_SECRET is unset; using ephemeral in-memory fallback.');
+if (parsed.NODE_ENV === 'production' && !explicitSessionSecret) {
+  console.warn('[MARSFORCE] SESSION_SECRET is unset; using DB-persisted or in-memory signing secret.');
 }
 
 // Always bind to port 3000 when NGINX_PORT is proxying on 8080, or use APP_PORT/3000
@@ -69,8 +70,9 @@ export const env = {
   isVercel: parsed.VERCEL === '1' || Boolean(parsed.VERCEL_URL),
   vercelOrigins,
   databaseUrl: (parsed.DATABASE_URL || parsed.POSTGRES_URL).trim(),
-  sessionSecret: parsed.SESSION_SECRET || ephemeralSessionFallback,
-  refreshSecret: parsed.REFRESH_SECRET || ephemeralRefreshFallback,
+  hasExplicitSessionSecret: Boolean(explicitSessionSecret),
+  sessionSecret: explicitSessionSecret || ephemeralSessionFallback,
+  refreshSecret: parsed.REFRESH_SECRET.trim() || explicitSessionSecret || ephemeralRefreshFallback,
   dataEncryptionKey: parsed.DATA_ENCRYPTION_KEY.trim(),
   seedAdminEmail: parsed.SEED_ADMIN_EMAIL.trim().toLowerCase(),
   seedAdminPassword: parsed.SEED_ADMIN_PASSWORD,

@@ -14,9 +14,9 @@ import {
   REFRESH_COOKIE_NAME,
   requireAuth,
   SESSION_COOKIE_NAME,
-  signAuthToken,
+  signAuthTokenAsync,
   validateBody,
-  verifySignedAuthToken,
+  verifySignedAuthTokenAsync,
   type AuthenticatedRequest,
   type PermissionCode,
   type UserRole,
@@ -171,6 +171,16 @@ export class AuthRepository {
     return res.rows[0] || null;
   }
 
+  async extendSession(sessionId: string) {
+    const db = getDb();
+    const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+    const refreshExpiresAt = new Date(Date.now() + REFRESH_TTL_MS);
+    await db.query(
+      'UPDATE sessions SET expires_at = $2, refresh_expires_at = $3 WHERE id = $1 AND revoked_at IS NULL',
+      [sessionId, expiresAt, refreshExpiresAt]
+    );
+  }
+
   async revokeSession(sessionId: string) {
     const db = getDb();
     await db.query('UPDATE sessions SET revoked_at = NOW() WHERE id = $1', [sessionId]);
@@ -249,7 +259,10 @@ export class AuthService {
 
   async getAuthStatus() {
     const count = await this.repo.countUsers();
-    return { needsInitialSetup: count === 0 };
+    return {
+      needsInitialSetup: count === 0,
+      vercelEphemeralWarning: env.isVercel && !env.databaseUrl && !env.hasExplicitSessionSecret,
+    };
   }
 
   async setupInitialSuperAdmin(input: z.infer<typeof SetupAdminSchema>, req: AuthenticatedRequest) {
@@ -299,7 +312,7 @@ export class AuthService {
     const sid = crypto.randomUUID();
     const familyId = existingFamilyId || crypto.randomUUID();
     const now = Date.now();
-    const sessionToken = signAuthToken({
+    const sessionToken = await signAuthTokenAsync({
       typ: 'access',
       sid,
       uid: user.id,
@@ -309,7 +322,7 @@ export class AuthService {
       iat: now,
       exp: now + SESSION_TTL_MS,
     });
-    const refreshToken = signAuthToken({
+    const refreshToken = await signAuthTokenAsync({
       typ: 'refresh',
       sid,
       fid: familyId,
@@ -420,7 +433,7 @@ export class AuthService {
     const row = await this.repo.findSessionByRefreshHash(hashToken(refreshToken));
     if (!row) {
       // Serverless /tmp DB fallback: verify HMAC-signed refresh token if DB row wasn't persisted here
-      const signed = verifySignedAuthToken(refreshToken, 'refresh');
+      const signed = await verifySignedAuthTokenAsync(refreshToken, 'refresh');
       if (!signed) {
         return { status: 401 as const, code: 'INVALID_REFRESH', message: 'Refresh token invalid.' };
       }
@@ -468,14 +481,16 @@ export class AuthService {
         new Date(row.refresh_expires_at).getTime() > Date.now() &&
         (await this.repo.hasActiveSiblingSession(row.token_family_id));
       if (!withinGraceWindow) {
-        return { status: 401 as const, code: 'INVALID_REFRESH', message: 'Refresh token already rotated.' };
+        return { status: 401 as const, code: 'INVALID_REFRESH', message: 'Session signed out. Please sign in.' };
       }
     } else if (!row.is_active || new Date(row.refresh_expires_at).getTime() <= Date.now()) {
       await this.repo.revokeSession(row.id);
       return { status: 401 as const, code: 'REFRESH_EXPIRED', message: 'Session expired. Please sign in.' };
     } else {
-      await this.repo.revokeSession(row.id);
+      // Keep the active session alive instead of revoking on every refresh so parallel tabs/requests never race
+      await this.repo.extendSession(row.id);
     }
+
     const tokens = await this.issueSessionTokens(
       { id: row.user_id, email: row.email, fullName: row.full_name, role: row.role },
       req,

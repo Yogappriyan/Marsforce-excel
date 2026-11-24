@@ -36,7 +36,9 @@ const PurgeSchema = z.object({
 export class SettingsService {
   async getAll(): Promise<Record<string, unknown>> {
     const db = getDb();
-    const res = await db.query<{ key: string; value: unknown }>('SELECT key, value FROM settings');
+    const res = await db.query<{ key: string; value: unknown }>(
+      `SELECT key, value FROM settings WHERE key NOT LIKE 'auth.%'`
+    );
     const out: Record<string, unknown> = {};
     for (const row of res.rows) {
       out[row.key] = row.value;
@@ -47,6 +49,7 @@ export class SettingsService {
       geminiKeyConfigured: Boolean(env.geminiApiKey),
       claudeKeyConfigured: Boolean(env.anthropicApiKey),
       llmWarning: getGeminiHealthWarning(),
+      vercelEphemeralWarning: env.isVercel && !env.databaseUrl && !env.hasExplicitSessionSecret,
     };
     return out;
   }
@@ -60,7 +63,7 @@ export class SettingsService {
   async updateMany(patch: Record<string, unknown>, actorId: string) {
     const db = getDb();
     for (const [k, v] of Object.entries(patch)) {
-      if (v === undefined) continue;
+      if (v === undefined || k.startsWith('auth.')) continue;
       await db.query(
         `INSERT INTO settings (key, value, updated_by, updated_at)
          VALUES ($1, $2::jsonb, $3, NOW())

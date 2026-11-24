@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createApiApp } from '../server/app.ts';
 import { runMigrations } from '../server/infrastructure/db/index.ts';
+import { getSigningSecret } from '../server/middleware/security.ts';
 import { authService } from '../server/modules/auth/auth.module.ts';
 
 const app = createApiApp();
@@ -10,6 +11,7 @@ async function ensureInitialized(): Promise<void> {
   if (!initPromise) {
     initPromise = (async () => {
       await runMigrations();
+      await getSigningSecret();
       await authService.seedSuperAdminFromEnv();
     })().catch((err) => {
       initPromise = null;
@@ -22,7 +24,11 @@ async function ensureInitialized(): Promise<void> {
 export default async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
     await ensureInitialized();
-    app(req as any, res as any);
+    await new Promise<void>((resolve) => {
+      res.once('finish', resolve);
+      res.once('close', resolve);
+      app(req as any, res as any);
+    });
   } catch (err) {
     console.error('[MARSFORCE Vercel API Error]', err);
     if (!res.headersSent) {

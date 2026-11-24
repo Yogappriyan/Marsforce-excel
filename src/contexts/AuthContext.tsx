@@ -11,6 +11,7 @@ interface AuthContextValue {
   user: AuthUser | null;
   loading: boolean;
   needsInitialSetup: boolean;
+  vercelEphemeralWarning: boolean;
   hasPermission: (perm: PermissionCode) => boolean;
   refreshUser: () => Promise<void>;
   logout: () => Promise<void>;
@@ -23,26 +24,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [needsInitialSetup, setNeedsInitialSetup] = useState(false);
+  const [vercelEphemeralWarning, setVercelEphemeralWarning] = useState(false);
 
   const refreshUser = useCallback(async () => {
     setLoading(true);
     try {
-      const status = await apiRequest<{ needsInitialSetup: boolean }>('/api/v1/auth/status', {
-        skipAutoRefresh: true,
-      });
-      setNeedsInitialSetup(status.needsInitialSetup);
-
-      if (!status.needsInitialSetup) {
-        const me = await apiRequest<{ user: AuthUser }>('/api/v1/auth/me');
-        setUser(me.user);
-      } else {
-        clearClientAuthTokens();
-        setUser(null);
-      }
+      const me = await apiRequest<{ user: AuthUser }>('/api/v1/auth/me');
+      setUser(me.user);
+      setNeedsInitialSetup(false);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         clearClientAuthTokens();
         setUser(null);
+        try {
+          const status = await apiRequest<{ needsInitialSetup: boolean; vercelEphemeralWarning?: boolean }>(
+            '/api/v1/auth/status',
+            { skipAutoRefresh: true }
+          );
+          setNeedsInitialSetup(status.needsInitialSetup);
+          setVercelEphemeralWarning(Boolean(status.vercelEphemeralWarning));
+        } catch {
+          // Ignore status probe error
+        }
       }
     } finally {
       setLoading(false);
@@ -83,6 +86,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         user,
         loading,
         needsInitialSetup,
+        vercelEphemeralWarning,
         hasPermission,
         refreshUser,
         logout,

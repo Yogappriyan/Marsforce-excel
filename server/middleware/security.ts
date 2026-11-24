@@ -58,15 +58,61 @@ export interface SignedTokenPayload {
   exp: number;
 }
 
-export function signAuthToken(payload: SignedTokenPayload): string {
+let cachedDbSigningSecret: string | null = null;
+let signingSecretPromise: Promise<string> | null = null;
+
+export async function getSigningSecret(): Promise<string> {
+  if (env.hasExplicitSessionSecret) {
+    return env.sessionSecret;
+  }
+  if (cachedDbSigningSecret) {
+    return cachedDbSigningSecret;
+  }
+  if (!signingSecretPromise) {
+    signingSecretPromise = (async () => {
+      try {
+        const db = getDb();
+        const generated = crypto.randomBytes(32).toString('hex');
+        await db.query(
+          `INSERT INTO settings (key, value, description)
+           VALUES ('auth.signing_secret', $1::jsonb, 'Internal HMAC signing secret')
+           ON CONFLICT (key) DO NOTHING`,
+          [JSON.stringify(generated)]
+        );
+        const res = await db.query<{ value: unknown }>(
+          `SELECT value FROM settings WHERE key = 'auth.signing_secret' LIMIT 1`
+        );
+        const val = res.rows[0]?.value;
+        if (typeof val === 'string' && val.length >= 32) {
+          cachedDbSigningSecret = val;
+          return val;
+        }
+      } catch {
+        // Fallback to process-scoped secret if DB is not ready yet
+      }
+      return env.sessionSecret;
+    })().finally(() => {
+      signingSecretPromise = null;
+    });
+  }
+  return signingSecretPromise;
+}
+
+export function signAuthToken(payload: SignedTokenPayload, secret: string = env.sessionSecret): string {
   const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const sig = crypto.createHmac('sha256', env.sessionSecret).update(encoded).digest('base64url');
+  const sig = crypto.createHmac('sha256', secret).update(encoded).digest('base64url');
   return `mf1.${encoded}.${sig}`;
+}
+
+export async function signAuthTokenAsync(payload: SignedTokenPayload): Promise<string> {
+  const secret = await getSigningSecret();
+  return signAuthToken(payload, secret);
 }
 
 export function verifySignedAuthToken(
   token: string | undefined,
-  expectedType: 'access' | 'refresh'
+  expectedType: 'access' | 'refresh',
+  secret: string = env.sessionSecret
 ): SignedTokenPayload | null {
   if (!token || !token.startsWith('mf1.')) return null;
   const parts = token.split('.');
@@ -74,7 +120,7 @@ export function verifySignedAuthToken(
   const [, encoded, providedSig] = parts;
   if (!encoded || !providedSig) return null;
   try {
-    const expectedSig = crypto.createHmac('sha256', env.sessionSecret).update(encoded).digest('base64url');
+    const expectedSig = crypto.createHmac('sha256', secret).update(encoded).digest('base64url');
     const a = Buffer.from(providedSig, 'utf8');
     const b = Buffer.from(expectedSig, 'utf8');
     if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
@@ -91,6 +137,15 @@ export function verifySignedAuthToken(
   } catch {
     return null;
   }
+}
+
+export async function verifySignedAuthTokenAsync(
+  token: string | undefined,
+  expectedType: 'access' | 'refresh'
+): Promise<SignedTokenPayload | null> {
+  const secret = await getSigningSecret();
+  return verifySignedAuthToken(token, expectedType, secret) ||
+    (secret !== env.sessionSecret ? verifySignedAuthToken(token, expectedType, env.sessionSecret) : null);
 }
 
 function isRequestHttps(req: Request): boolean {
@@ -145,7 +200,7 @@ export function getClearCookieOptions(req: Request): CookieOptions {
 
 export const loginRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 120,
+  max: 300,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -158,7 +213,7 @@ export const loginRateLimiter = rateLimit({
 
 export const uploadRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 60,
+  max: 120,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -171,7 +226,8 @@ export const uploadRateLimiter = rateLimit({
 
 export const generalApiRateLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 600,
+  max: 1200,
+  skip: (req) => req.path.startsWith('/auth/'),
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -362,10 +418,11 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
         isActive: row.is_active,
       };
     } else {
-      // Fallback for serverless cold starts or recycled ephemeral /tmp databases: verify HMAC-signed session token
+      // Fallback for serverless cold starts or recycled ephemeral /tmp databases:
+      // verify HMAC-signed session token against the shared signing secret
       const signed =
-        verifySignedAuthToken(bearerToken, 'access') ||
-        verifySignedAuthToken(cookieToken, 'access');
+        (await verifySignedAuthTokenAsync(bearerToken, 'access')) ||
+        (await verifySignedAuthTokenAsync(cookieToken, 'access'));
       if (!signed) {
         return res.status(401).json({
           error: { code: 'SESSION_INVALID', message: 'Session expired or invalid. Please sign in again.' },
