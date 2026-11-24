@@ -388,8 +388,14 @@ export function createProcessingRouter() {
           },
         });
 
-        jobWorker.wake();
-        res.status(202).json({ job: primaryJob, jobs });
+        if (jobWorker.isRunning) {
+          jobWorker.wake();
+          return res.status(202).json({ job: primaryJob, jobs });
+        }
+
+        await jobWorker.advanceUntilSettled(3500);
+        const refreshedRes = await db.query('SELECT * FROM jobs WHERE id = $1', [primaryJob.id]);
+        res.status(202).json({ job: refreshedRes.rows[0] || primaryJob, jobs });
       } catch (err) {
         next(err);
       }

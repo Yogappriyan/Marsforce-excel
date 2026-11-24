@@ -417,6 +417,79 @@ export function createUploadsRouter() {
     }
   });
 
+  router.get('/:id/download', requirePermission('view'), validateUuidParams('id'), async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const data = await repo.findById(String(req.params.id));
+      if (!data) {
+        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Upload not found.' } });
+      }
+      const { upload, sheets } = data;
+      const storage = getStorageAdapter();
+      let fileBuffer: Buffer | null = null;
+      let downloadFilename = String(upload.original_filename || 'workbook.xlsx');
+      let contentType =
+        upload.mime_type ||
+        (upload.file_extension === '.csv'
+          ? 'text/csv; charset=utf-8'
+          : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+
+      if (upload.storage_key) {
+        try {
+          fileBuffer = await storage.getObjectBuffer(upload.storage_key);
+        } catch {
+          fileBuffer = null;
+        }
+      }
+
+      if (!fileBuffer) {
+        // Fallback reconstruction from stored raw_records if original file blob is missing
+        const wb = new ExcelJS.Workbook();
+        wb.creator = 'MARSFORCE';
+        const usedNames = new Set<string>();
+        for (const sheet of sheets) {
+          let sheetTitle = String(sheet.sheet_name || 'Sheet1')
+            .replace(/[\\/*?:[\]]/g, '_')
+            .slice(0, 31) || 'Sheet1';
+          while (usedNames.has(sheetTitle.toLowerCase())) {
+            sheetTitle = `${sheetTitle.slice(0, 27)}_${usedNames.size + 1}`;
+          }
+          usedNames.add(sheetTitle.toLowerCase());
+          const headers: string[] = Array.isArray(sheet.headers) && sheet.headers.length > 0 ? sheet.headers.map(String) : ['Column_1'];
+          const ws = wb.addWorksheet(sheetTitle);
+          ws.addRow(headers);
+          const fallbackRows = await repo.getRawRecordsFallback(upload.id, sheet.id);
+          for (const fr of fallbackRows) {
+            ws.addRow(headers.map((h) => String(fr.raw_data?.[h] ?? '')));
+          }
+        }
+        const ab = await wb.xlsx.writeBuffer();
+        fileBuffer = Buffer.from(ab);
+        if (!downloadFilename.toLowerCase().endsWith('.xlsx')) {
+          downloadFilename = `${downloadFilename.replace(/\.(xls|csv)$/i, '')}.xlsx`;
+        }
+        contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      }
+
+      await emitAuditLog({
+        actorId: req.authUser!.id,
+        actorRole: req.authUser!.role,
+        action: 'UPLOAD_ORIGINAL_DOWNLOAD',
+        resourceType: 'upload',
+        resourceId: upload.id,
+        req,
+      });
+
+      const safeHeaderFilename = downloadFilename.replace(/["\r\n\\]/g, '_');
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Disposition', `attachment; filename="${safeHeaderFilename}"`);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', 'no-store, private');
+      res.send(fileBuffer);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   router.get('/:id/backup-payload', requirePermission('view'), validateUuidParams('id'), async (req, res, next) => {
     try {
       const data = await repo.findById(String(req.params.id));

@@ -1,6 +1,8 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import {
   onAuthStateChanged,
+  signInWithPopup,
+  signOut,
   type User,
 } from 'firebase/auth';
 import {
@@ -13,7 +15,9 @@ import {
 import {
   auth,
   db,
+  googleProvider,
   handleFirestoreError,
+  isHostnameAuthorizedForFirebase,
   OperationType,
   testFirestoreConnection,
 } from '../lib/firebase.ts';
@@ -22,9 +26,12 @@ interface FirebaseContextValue {
   firebaseUser: User | null;
   authReady: boolean;
   isVaultConnected: boolean;
+  connectingGoogle: boolean;
   connectionOffline: boolean;
   connectionMessage: string | null;
   vaultAuthError: string | null;
+  connectGoogleBackup: () => Promise<void>;
+  disconnectGoogleBackup: () => Promise<void>;
   ensureVaultProfile: (user: User) => Promise<void>;
   clearVaultAuthError: () => void;
 }
@@ -151,6 +158,7 @@ async function syncUserProfileToFirestore(user: User): Promise<void> {
 export function FirebaseProvider({ children }: { children: React.ReactNode }) {
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
+  const [connectingGoogle, setConnectingGoogle] = useState(false);
   const [connectionOffline, setConnectionOffline] = useState(false);
   const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
   const [vaultAuthError, setVaultAuthError] = useState<string | null>(null);
@@ -164,14 +172,6 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setFirebaseUser(user);
-      setAuthReady(true);
-    });
-    return () => unsubscribe();
-  }, []);
-
   const ensureVaultProfile = useCallback(async (user: User) => {
     setVaultAuthError(null);
     try {
@@ -179,8 +179,65 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
     } catch (err) {
       if (!isStillSignedInAs(user.uid)) return;
       setVaultAuthError(
-        err instanceof Error ? err.message : 'Failed to initialize Firestore user vault profile.'
+        err instanceof Error ? err.message : 'Failed to initialize Firestore backup vault profile.'
       );
+    }
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setFirebaseUser(user);
+      setAuthReady(true);
+      if (user && user.emailVerified) {
+        void ensureVaultProfile(user);
+      }
+    });
+    return () => unsubscribe();
+  }, [ensureVaultProfile]);
+
+  const connectGoogleBackup = useCallback(async () => {
+    setVaultAuthError(null);
+    setConnectingGoogle(true);
+    try {
+      const domainCheck = await isHostnameAuthorizedForFirebase();
+      if (!domainCheck.authorized && typeof window !== 'undefined') {
+        setVaultAuthError(
+          `Add "${window.location.hostname}" to Firebase Auth Authorized Domains to connect Google Backup here. Backend Excel storage still works automatically.`
+        );
+        return;
+      }
+
+      const cred = await signInWithPopup(auth, googleProvider);
+      if (!cred.user.emailVerified) {
+        setVaultAuthError('Your Google account must have a verified email to sync Cloud Firestore backups.');
+        return;
+      }
+      await ensureVaultProfile(cred.user);
+    } catch (err: any) {
+      const code = String(err?.code || '');
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        return;
+      }
+      if (code === 'auth/popup-blocked') {
+        setVaultAuthError('Pop-up was blocked by your browser. Allow pop-ups to connect Google Backup.');
+      } else if (code === 'auth/unauthorized-domain' && typeof window !== 'undefined') {
+        setVaultAuthError(
+          `Domain "${window.location.hostname}" is not authorized in Firebase Console yet. Backend Excel storage still works automatically.`
+        );
+      } else {
+        setVaultAuthError(err instanceof Error ? err.message : 'Unable to connect Google Backup.');
+      }
+    } finally {
+      setConnectingGoogle(false);
+    }
+  }, [ensureVaultProfile]);
+
+  const disconnectGoogleBackup = useCallback(async () => {
+    setVaultAuthError(null);
+    try {
+      await signOut(auth);
+    } catch (err) {
+      setVaultAuthError(err instanceof Error ? err.message : 'Unable to disconnect Google Backup.');
     }
   }, []);
 
@@ -194,9 +251,12 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
         firebaseUser,
         authReady,
         isVaultConnected,
+        connectingGoogle,
         connectionOffline,
         connectionMessage,
         vaultAuthError,
+        connectGoogleBackup,
+        disconnectGoogleBackup,
         ensureVaultProfile,
         clearVaultAuthError,
       }}

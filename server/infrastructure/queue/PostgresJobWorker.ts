@@ -64,6 +64,10 @@ export class PostgresJobWorker implements JobWorkerInterface {
   private reaperTimer: NodeJS.Timeout | null = null;
   private drainPromise: Promise<void> | null = null;
 
+  get isRunning(): boolean {
+    return this.running;
+  }
+
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
@@ -91,14 +95,32 @@ export class PostgresJobWorker implements JobWorkerInterface {
       setImmediate(() => void this.tick());
       return;
     }
+    const promise = this.drainPendingWork();
     if (env.isVercel) {
-      const promise = this.drainPendingWork();
       try {
         waitUntil(promise);
       } catch {
         // Ignore outside active serverless request context
       }
+    } else {
+      void promise;
     }
+  }
+
+  async advanceUntilSettled(maxWaitMs = 3500): Promise<void> {
+    if (this.running) return;
+    const drain = this.drainPendingWork(15_000);
+    if (env.isVercel) {
+      try {
+        waitUntil(drain);
+      } catch {
+        // Ignore outside active serverless request context
+      }
+    }
+    await Promise.race([
+      drain,
+      new Promise<void>((resolve) => setTimeout(resolve, maxWaitMs)),
+    ]);
   }
 
   async drainPendingWork(maxDurationMs = 45_000): Promise<void> {

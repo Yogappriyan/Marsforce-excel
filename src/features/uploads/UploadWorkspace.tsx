@@ -27,7 +27,6 @@ import {
   buildApiUrl,
   downloadAuthenticatedFile,
   generateAndDownloadExport,
-  getFreshAuthHeaders,
 } from '../../api/client.ts';
 import { useAuth } from '../../contexts/AuthContext.tsx';
 import { useFirebase } from '../../contexts/FirebaseContext.tsx';
@@ -84,9 +83,12 @@ export function UploadWorkspace({
   const {
     firebaseUser,
     isVaultConnected,
+    connectingGoogle,
     connectionOffline,
     connectionMessage,
     vaultAuthError,
+    connectGoogleBackup,
+    disconnectGoogleBackup,
     clearVaultAuthError,
   } = useFirebase();
   const [uploads, setUploads] = useState<UploadDTO[]>([]);
@@ -99,6 +101,7 @@ export function UploadWorkspace({
   const [selectedCols, setSelectedCols] = useState<string[]>([]);
 
   const [mappings, setMappings] = useState<ColumnMappingItem[]>([]);
+  const [detectingMapping, setDetectingMapping] = useState(false);
   const [suggestedTemplate, setSuggestedTemplate] = useState<MappingTemplateDTO | null>(null);
   const [templateName, setTemplateName] = useState('');
   const [useAiMapping, setUseAiMapping] = useState(true);
@@ -127,6 +130,7 @@ export function UploadWorkspace({
   // Cloud Firestore Vault state
   const [vaultUploads, setVaultUploads] = useState<VaultUploadRecord[]>([]);
   const [vaultSyncStatus, setVaultSyncStatus] = useState<string | null>(null);
+  const [vaultSyncWarning, setVaultSyncWarning] = useState<string | null>(null);
   const [syncingUploadId, setSyncingUploadId] = useState<string | null>(null);
   const [syncingAllVault, setSyncingAllVault] = useState(false);
   const [restoringVaultId, setRestoringVaultId] = useState<string | null>(null);
@@ -183,6 +187,7 @@ export function UploadWorkspace({
 
   const detectMappingsForSheet = useCallback(
     async (uploadId: string, sheet: UploadSheetDTO, aiEnabled = useAiMapping) => {
+      setDetectingMapping(true);
       try {
         const res = await apiRequest<{
           mappings: ColumnMappingItem[];
@@ -197,6 +202,8 @@ export function UploadWorkspace({
         setAiWarning(res.aiWarning || null);
       } catch (err) {
         setErrorMsg(err instanceof Error ? err.message : 'Column detection failed');
+      } finally {
+        setDetectingMapping(false);
       }
     },
     [useAiMapping]
@@ -318,7 +325,6 @@ export function UploadWorkspace({
       try {
         const res = await fetch(buildApiUrl(`/api/v1/jobs/${jobId}/stream`), {
           credentials: 'include',
-          headers: await getFreshAuthHeaders(),
           signal: controller.signal,
         });
         if (!res.ok || !res.body) {
@@ -381,14 +387,15 @@ export function UploadWorkspace({
       });
 
       let backupNote = '';
+      setVaultSyncWarning(null);
       if (isVaultConnected && firebaseUser?.uid) {
         try {
           setSyncingUploadId(res.upload.id);
           await backupUploadToFirestore(firebaseUser.uid, res.upload.id, (msg) => setVaultSyncStatus(msg));
-          backupNote = ' and backed up to Cloud Firestore Vault';
+          backupNote = ' and backed up to Google Cloud Firestore';
         } catch (vaultErr) {
-          setVaultSyncStatus(
-            `Uploaded locally, but Cloud Firestore backup needs retry: ${
+          setVaultSyncWarning(
+            `Saved to backend storage, but Google Backup needs retry: ${
               vaultErr instanceof Error ? vaultErr.message : 'Backup error'
             }`
           );
@@ -399,7 +406,7 @@ export function UploadWorkspace({
       }
 
       setStatusMsg(
-        `Uploaded "${res.upload.original_filename}" (${res.upload.total_rows.toLocaleString()} rows)${backupNote}. Review detected fields or click Process & Group by Area.`
+        `Saved "${res.upload.original_filename}" (${res.upload.total_rows.toLocaleString()} rows) in backend storage${backupNote}. Review detected fields or click Process & Group by Area.`
       );
       await loadUploadsAndTemplates();
       await openUploadDetail(res.upload.id);
@@ -435,6 +442,18 @@ export function UploadWorkspace({
     setStatusMsg(null);
     setStartingProcess(true);
     try {
+      const effectiveMappings: ColumnMappingItem[] =
+        mappings.length > 0
+          ? mappings
+          : activeSheet.headers.map((col, idx) => ({
+              sourceColumn: col,
+              sourceIndex: idx,
+              targetField: selectedCols.includes(col) ? 'custom' : 'ignore',
+              customFieldKey: col,
+              detectionSource: 'RULE',
+              confidence: 0.7,
+            }));
+
       await apiRequest(`/api/v1/uploads/${selectedUpload.id}/sheets/${activeSheet.id}/select`, {
         method: 'POST',
         body: JSON.stringify({ selectedColumns: selectedCols }),
@@ -443,7 +462,7 @@ export function UploadWorkspace({
       await apiRequest(`/api/v1/processing/uploads/${selectedUpload.id}/sheets/${activeSheet.id}/mapping`, {
         method: 'PUT',
         body: JSON.stringify({
-          mappings: mappings.map((m) => ({
+          mappings: effectiveMappings.map((m) => ({
             ...m,
             targetField: selectedCols.includes(m.sourceColumn) ? m.targetField : 'ignore',
           })),
@@ -986,14 +1005,16 @@ export function UploadWorkspace({
 
               <button
                 type="button"
-                disabled={startingProcess}
+                disabled={startingProcess || detectingMapping}
                 onClick={() => void handleSaveAndStart()}
                 className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg cursor-pointer transition-colors whitespace-nowrap disabled:opacity-50"
               >
                 <Play className="w-3.5 h-3.5" />
-                {startingProcess
-                  ? 'Starting...'
-                  : `Process & Group by Area (${totalRowsToProcess.toLocaleString()} Rows)`}
+                {detectingMapping
+                  ? 'Detecting columns...'
+                  : startingProcess
+                    ? 'Starting...'
+                    : `Process & Group by Area (${totalRowsToProcess.toLocaleString()} Rows)`}
               </button>
             </div>
           )}
@@ -1374,135 +1395,167 @@ export function UploadWorkspace({
         </section>
       )}
 
-      {/* Cloud Firestore Backup Vault (Zero-Data-Loss Protection) */}
-      {isVaultConnected && (
+      {/* Cloud Firestore Backup Vault (Optional Google Sign-In strictly for Excel backup) */}
       <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
         <div className="px-5 py-3.5 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
-            <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+            <ShieldCheck
+              className={`w-4 h-4 shrink-0 ${
+                isVaultConnected ? 'text-emerald-600 dark:text-emerald-400' : 'text-blue-600 dark:text-blue-400'
+              }`}
+            />
             <div>
               <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-                Cloud Firestore Backup Vault
+                Google Cloud Excel Backup
               </h2>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                Every Excel upload is stored in Firestore with strict owner-only rules and permanent-delete protection.
+                Every Excel uploaded is stored automatically in backend storage. Connect Google Sign-In strictly to mirror backups in Cloud Firestore.
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-slate-600 dark:text-slate-300 flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900">
-              <Cloud className="w-3.5 h-3.5 text-emerald-600" />
-              {firebaseUser?.email}
-            </span>
-            {unbackedUploads.length > 0 && (
+            {isVaultConnected ? (
+              <>
+                <span className="text-xs text-slate-600 dark:text-slate-300 flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900">
+                  <Cloud className="w-3.5 h-3.5 text-emerald-600" />
+                  {firebaseUser?.email}
+                </span>
+                {unbackedUploads.length > 0 && (
+                  <button
+                    type="button"
+                    disabled={syncingAllVault}
+                    onClick={() => void handleBackupAllToFirestore()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white cursor-pointer disabled:opacity-50"
+                  >
+                    <CloudUpload className="w-3.5 h-3.5" />
+                    {syncingAllVault
+                      ? 'Syncing...'
+                      : `Back Up ${unbackedUploads.length} Backend File${unbackedUploads.length === 1 ? '' : 's'}`}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void disconnectGoogleBackup()}
+                  className="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                >
+                  Disconnect
+                </button>
+              </>
+            ) : (
               <button
                 type="button"
-                disabled={syncingAllVault}
-                onClick={() => void handleBackupAllToFirestore()}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white cursor-pointer disabled:opacity-50"
+                disabled={connectingGoogle}
+                onClick={() => void connectGoogleBackup()}
+                className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg bg-slate-900 hover:bg-slate-800 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200 text-white cursor-pointer disabled:opacity-50"
               >
                 <CloudUpload className="w-3.5 h-3.5" />
-                {syncingAllVault
-                  ? 'Syncing...'
-                  : `Back Up ${unbackedUploads.length} Local File${unbackedUploads.length === 1 ? '' : 's'}`}
+                {connectingGoogle ? 'Connecting Google...' : 'Connect Google Backup'}
               </button>
             )}
           </div>
         </div>
 
-        {(connectionOffline || vaultAuthError || vaultSyncStatus) && (
+        {(connectionOffline || vaultAuthError || vaultSyncWarning || vaultSyncStatus) && (
           <div
             className={`px-5 py-2.5 border-b text-xs flex items-center justify-between gap-3 ${
-              connectionOffline || vaultAuthError
+              connectionOffline || vaultAuthError || vaultSyncWarning
                 ? 'border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200'
                 : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-700 dark:text-slate-300'
             }`}
           >
             <span className="flex items-center gap-2">
-              {(connectionOffline || vaultAuthError) && <AlertTriangle className="w-3.5 h-3.5 shrink-0" />}
+              {(connectionOffline || vaultAuthError || vaultSyncWarning) && <AlertTriangle className="w-3.5 h-3.5 shrink-0" />}
               <span>
                 {connectionOffline
                   ? connectionMessage
                   : vaultAuthError
                     ? vaultAuthError
-                    : vaultSyncStatus}
+                    : vaultSyncWarning || vaultSyncStatus}
               </span>
             </span>
-            {vaultAuthError && (
-              <button type="button" onClick={clearVaultAuthError} className="underline cursor-pointer shrink-0">
+            {(vaultAuthError || vaultSyncWarning) && (
+              <button
+                type="button"
+                onClick={() => {
+                  clearVaultAuthError();
+                  setVaultSyncWarning(null);
+                }}
+                className="underline cursor-pointer shrink-0"
+              >
                 Dismiss
               </button>
             )}
           </div>
         )}
 
-        <div className="p-4 space-y-3">
-          {vaultUploads.length === 0 ? (
-            <div className="text-xs text-slate-500 dark:text-slate-400">
-              No files backed up yet. Every new file you upload automatically saves here, or click &ldquo;Back Up&rdquo; on any local file below.
-            </div>
-          ) : (
-            <>
-              <div className="flex items-center justify-between text-xs text-slate-500">
-                <span className="tabular-nums">
-                  {visibleVaultUploads.length} backed-up workbook{visibleVaultUploads.length === 1 ? '' : 's'}
-                </span>
-                <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={showArchivedVault}
-                    onChange={(e) => setShowArchivedVault(e.target.checked)}
-                  />
-                  Show archived backups
-                </label>
+        {isVaultConnected && (
+          <div className="p-4 space-y-3">
+            {vaultUploads.length === 0 ? (
+              <div className="text-xs text-slate-500 dark:text-slate-400">
+                Connected. Every new Excel or CSV uploaded automatically saves to Cloud Firestore Vault, or click &ldquo;Back Up&rdquo; on any backend file below.
               </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between text-xs text-slate-500">
+                  <span className="tabular-nums">
+                    {visibleVaultUploads.length} backed-up workbook{visibleVaultUploads.length === 1 ? '' : 's'}
+                  </span>
+                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={showArchivedVault}
+                      onChange={(e) => setShowArchivedVault(e.target.checked)}
+                    />
+                    Show archived backups
+                  </label>
+                </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {visibleVaultUploads.map((v) => (
-                  <div
-                    key={v.id}
-                    className="flex items-center justify-between gap-3 p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950"
-                  >
-                    <div className="min-w-0">
-                      <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                        {v.originalFilename}
-                        {v.isArchived ? ' (Archived)' : ''}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {visibleVaultUploads.map((v) => (
+                    <div
+                      key={v.id}
+                      className="flex items-center justify-between gap-3 p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                          {v.originalFilename}
+                          {v.isArchived ? ' (Archived)' : ''}
+                        </div>
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400 tabular-nums mt-0.5">
+                          {v.totalRows.toLocaleString()} rows · {v.sheetCount} sheet{v.sheetCount === 1 ? '' : 's'} ·{' '}
+                          {v.chunkCount} chunks · SHA {v.fileSha256.slice(0, 8)}
+                        </div>
                       </div>
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400 tabular-nums mt-0.5">
-                        {v.totalRows.toLocaleString()} rows · {v.sheetCount} sheet{v.sheetCount === 1 ? '' : 's'} ·{' '}
-                        {v.chunkCount} chunks · SHA {v.fileSha256.slice(0, 8)}
-                      </div>
-                    </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
-                      {hasPermission('upload') && (
+                      <div className="flex items-center gap-2 shrink-0">
+                        {hasPermission('upload') && (
+                          <button
+                            type="button"
+                            disabled={restoringVaultId === v.id}
+                            onClick={() => void handleRestoreFromVault(v)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold rounded-md bg-blue-600 hover:bg-blue-700 text-white cursor-pointer disabled:opacity-50"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            {restoringVaultId === v.id ? 'Restoring...' : 'Restore'}
+                          </button>
+                        )}
                         <button
                           type="button"
-                          disabled={restoringVaultId === v.id}
-                          onClick={() => void handleRestoreFromVault(v)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold rounded-md bg-blue-600 hover:bg-blue-700 text-white cursor-pointer disabled:opacity-50"
+                          onClick={() => void handleToggleArchiveVault(v)}
+                          className="px-2 py-1.5 text-[11px] font-medium rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
                         >
-                          <RotateCcw className="w-3 h-3" />
-                          {restoringVaultId === v.id ? 'Restoring...' : 'Restore'}
+                          {v.isArchived ? 'Unarchive' : 'Archive'}
                         </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => void handleToggleArchiveVault(v)}
-                        className="px-2 py-1.5 text-[11px] font-medium rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
-                      >
-                        {v.isArchived ? 'Unarchive' : 'Archive'}
-                      </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </section>
-      )}
 
       {recentlyDeletedUpload && (
         <div className="p-3.5 rounded-lg border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/40 text-xs text-amber-900 dark:text-amber-200 flex items-center justify-between gap-4">
@@ -1607,6 +1660,19 @@ export function UploadWorkspace({
                         {new Date(u.created_at).toLocaleString()}
                       </td>
                       <td className="py-2.5 px-4 text-right space-x-3 whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void downloadAuthenticatedFile(
+                              `/api/v1/uploads/${u.id}/download`,
+                              u.original_filename
+                            ).catch((err) => setErrorMsg(err instanceof Error ? err.message : 'Download failed'))
+                          }
+                          className="text-slate-600 dark:text-slate-300 hover:underline font-medium cursor-pointer inline-flex items-center gap-1"
+                        >
+                          <Download className="w-3 h-3" />
+                          Original
+                        </button>
                         <button
                           type="button"
                           onClick={() => void openUploadDetail(u.id)}

@@ -369,12 +369,16 @@ export function createGeoRouter() {
           conds.push(`(sr.detected_area IS NULL OR sr.detected_area = '')`);
         } else {
           params.push(normalizeGeoGroupKey(req.query.area));
-          conds.push(`LOWER(REGEXP_REPLACE(TRIM(COALESCE(sr.detected_area, '')), '\\s+', ' ', 'g')) = $${params.length}`);
+          conds.push(
+            `LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(BOTH ' -:;|,.' FROM COALESCE(sr.detected_area, '')), '\\s*-\\s*', ' - ', 'g'), '\\s+', ' ', 'g')) = $${params.length}`
+          );
         }
       }
       if (typeof req.query.streetGroup === 'string' && req.query.streetGroup) {
         params.push(normalizeGeoGroupKey(req.query.streetGroup));
-        conds.push(`LOWER(REGEXP_REPLACE(TRIM(COALESCE(sr.street_group, '')), '\\s+', ' ', 'g')) = $${params.length}`);
+        conds.push(
+          `LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(BOTH ' -:;|,.' FROM COALESCE(sr.street_group, '')), '\\s*-\\s*', ' - ', 'g'), '\\s+', ' ', 'g')) = $${params.length}`
+        );
       }
       if (typeof req.query.search === 'string' && req.query.search.trim()) {
         params.push(`%${req.query.search.trim()}%`);
@@ -583,7 +587,7 @@ export function createGeoRouter() {
                    geographic_review_status = CASE WHEN geographic_review_status = 'UNIDENTIFIED' THEN geographic_review_status ELSE 'CONFIRMED' END,
                    updated_at = NOW()
                WHERE upload_id = $1 AND deleted_at IS NULL AND is_merged = false
-                 AND (LOWER(REGEXP_REPLACE(TRIM(COALESCE(area, '')), '\\s+', ' ', 'g')) = ANY($3::text[]) OR ($4::boolean AND (area IS NULL OR TRIM(area) = '')))
+                 AND (LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(BOTH ' -:;|,.' FROM COALESCE(area, '')), '\\s*-\\s*', ' - ', 'g'), '\\s+', ' ', 'g')) = ANY($3::text[]) OR ($4::boolean AND (area IS NULL OR TRIM(area) = '')))
                RETURNING id`,
               [body.uploadId, canonicalTarget, namedSources, matchesUnassigned]
             );
@@ -593,7 +597,7 @@ export function createGeoRouter() {
               `UPDATE source_rows
                SET detected_area = $2, classification_source = 'MANUAL_MERGE'
                WHERE upload_id = $1
-                 AND (LOWER(REGEXP_REPLACE(TRIM(COALESCE(detected_area, '')), '\\s+', ' ', 'g')) = ANY($3::text[]) OR ($4::boolean AND (detected_area IS NULL OR TRIM(detected_area) = '')))`,
+                 AND (LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(BOTH ' -:;|,.' FROM COALESCE(detected_area, '')), '\\s*-\\s*', ' - ', 'g'), '\\s+', ' ', 'g')) = ANY($3::text[]) OR ($4::boolean AND (detected_area IS NULL OR TRIM(detected_area) = '')))`,
               [body.uploadId, canonicalTarget, namedSources, matchesUnassigned]
             );
           } else {
@@ -602,7 +606,7 @@ export function createGeoRouter() {
               body.parentArea === '__UNASSIGNED__'
                 ? `(area IS NULL OR TRIM(area) = '')`
                 : body.parentArea
-                  ? `LOWER(REGEXP_REPLACE(TRIM(COALESCE(area, '')), '\\s+', ' ', 'g')) = $5`
+                  ? `LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(BOTH ' -:;|,.' FROM COALESCE(area, '')), '\\s*-\\s*', ' - ', 'g'), '\\s+', ' ', 'g')) = $5`
                   : 'TRUE';
             const params: unknown[] = [body.uploadId, canonicalTarget, nextType, normStreetSources];
             if (body.parentArea && body.parentArea !== '__UNASSIGNED__') {
@@ -618,7 +622,7 @@ export function createGeoRouter() {
                    geographic_conflict_reason = NULL,
                    updated_at = NOW()
                WHERE upload_id = $1 AND deleted_at IS NULL AND is_merged = false
-                 AND LOWER(REGEXP_REPLACE(TRIM(COALESCE(NULLIF(street_group, ''), 'UNIDENTIFIED')), '\\s+', ' ', 'g')) = ANY($4::text[])
+                 AND LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(BOTH ' -:;|,.' FROM COALESCE(NULLIF(street_group, ''), 'UNIDENTIFIED')), '\\s*-\\s*', ' - ', 'g'), '\\s+', ' ', 'g')) = ANY($4::text[])
                  AND ${areaCond}
                RETURNING id`,
               params
@@ -629,13 +633,13 @@ export function createGeoRouter() {
               body.parentArea === '__UNASSIGNED__'
                 ? `(detected_area IS NULL OR TRIM(detected_area) = '')`
                 : body.parentArea
-                  ? `LOWER(REGEXP_REPLACE(TRIM(COALESCE(detected_area, '')), '\\s+', ' ', 'g')) = $5`
+                  ? `LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(BOTH ' -:;|,.' FROM COALESCE(detected_area, '')), '\\s*-\\s*', ' - ', 'g'), '\\s+', ' ', 'g')) = $5`
                   : 'TRUE';
             await tx.query(
               `UPDATE source_rows
                SET street_group = $2, group_type = $3, classification_source = 'MANUAL_MERGE', review_status = 'CONFIRMED', conflict_reason = NULL
                WHERE upload_id = $1
-                 AND LOWER(REGEXP_REPLACE(TRIM(COALESCE(NULLIF(street_group, ''), 'UNIDENTIFIED')), '\\s+', ' ', 'g')) = ANY($4::text[])
+                 AND LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(BOTH ' -:;|,.' FROM COALESCE(NULLIF(street_group, ''), 'UNIDENTIFIED')), '\\s*-\\s*', ' - ', 'g'), '\\s+', ' ', 'g')) = ANY($4::text[])
                  AND ${srAreaCond}`,
               params
             );
@@ -849,8 +853,14 @@ export function createGeoRouter() {
           metadata: { jobId: jobs[0].id, sheetCount: jobs.length },
         });
 
-        jobWorker.wake();
-        res.status(202).json({ job: jobs[0], jobs });
+        if (jobWorker.isRunning) {
+          jobWorker.wake();
+          return res.status(202).json({ job: jobs[0], jobs });
+        }
+
+        await jobWorker.advanceUntilSettled(3500);
+        const refreshed = await db.query('SELECT * FROM jobs WHERE id = $1', [jobs[0].id]);
+        res.status(202).json({ job: refreshed.rows[0] || jobs[0], jobs });
       } catch (err) {
         next(err);
       }

@@ -267,6 +267,18 @@ function readCellSafely(
     };
   }
 
+  if (cell.t === 'e') {
+    const errDisplay = formattedW || '';
+    return {
+      valueText: errDisplay,
+      displayText: errDisplay,
+      precisionLoss: null,
+      formula,
+      isBold,
+      isCentered,
+    };
+  }
+
   const rawText = cell.v !== undefined && cell.v !== null ? String(cell.v) : formattedW;
   // Detect literal string cells that already contain scientific notation like "1.23E+15" saved from a prior corrupted export
   if (/^[+-]?\d+(?:\.\d+)?[eE]\+\d{1,3}$/.test(rawText.trim())) {

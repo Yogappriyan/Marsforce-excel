@@ -54,12 +54,16 @@ export function createJobsRouter() {
     try {
       const db = getDb();
       const id = String(req.params.id);
-      const jobRes = await db.query('SELECT * FROM jobs WHERE id = $1', [id]);
-      const job = jobRes.rows[0];
+      let jobRes = await db.query('SELECT * FROM jobs WHERE id = $1', [id]);
+      let job = jobRes.rows[0];
       if (!job) {
         return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Job not found.' } });
       }
-      if (env.isVercel && (job.status === 'QUEUED' || job.status === 'RUNNING')) {
+      if (!jobWorker.isRunning && (job.status === 'QUEUED' || job.status === 'RUNNING')) {
+        await jobWorker.advanceUntilSettled(2500);
+        jobRes = await db.query('SELECT * FROM jobs WHERE id = $1', [id]);
+        job = jobRes.rows[0] || job;
+      } else if (env.isVercel && (job.status === 'QUEUED' || job.status === 'RUNNING')) {
         jobWorker.wake();
       }
       const chunksRes = await db.query(

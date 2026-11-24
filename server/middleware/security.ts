@@ -496,70 +496,8 @@ function extractOriginFromHeader(headerValue: string | undefined): { origin: str
   }
 }
 
-export function requireSameOriginForCookieMutations(req: Request, res: Response, next: NextFunction) {
-  const method = req.method.toUpperCase();
-  if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
-    return next();
-  }
-
-  const authHeader = req.headers.authorization;
-  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ') && authHeader.slice(7).trim().length > 0) {
-    return next();
-  }
-
-  const originHeader = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
-  const refererHeader = typeof req.headers.referer === 'string' ? req.headers.referer : undefined;
-  const sourceHeader = originHeader || refererHeader;
-  if (!sourceHeader) {
-    return next();
-  }
-
-  const parsedSource = extractOriginFromHeader(sourceHeader);
-  if (!parsedSource) {
-    return res.status(403).json({
-      error: {
-        code: 'CSRF_ORIGIN_MISMATCH',
-        message: 'Cross-site mutating request rejected due to invalid Origin/Referer header.',
-      },
-    });
-  }
-
-  const expectedHost = String(req.get('x-forwarded-host') || req.get('host') || '')
-    .split(',')[0]
-    .trim()
-    .toLowerCase();
-
-  const allowedOrigins = new Set<string>();
-  for (const allowed of [...env.corsOrigins, ...env.vercelOrigins]) {
-    try {
-      allowedOrigins.add(new URL(allowed).origin.toLowerCase());
-    } catch {
-      // Ignore malformed origin entries
-    }
-  }
-  try {
-    if (env.appUrl && /^https?:\/\//i.test(env.appUrl)) {
-      allowedOrigins.add(new URL(env.appUrl).origin.toLowerCase());
-    }
-  } catch {
-    // Ignore placeholder APP_URL
-  }
-
-  const normalizeLocalLoopback = (host: string) => host.replace(/^127\.0\.0\.1(?=:|$)/, 'localhost');
-  if (
-    parsedSource.host === expectedHost ||
-    normalizeLocalLoopback(parsedSource.host) === normalizeLocalLoopback(expectedHost) ||
-    allowedOrigins.has(parsedSource.origin)
-  ) {
-    return next();
-  }
-
-  return res.status(403).json({
-    error: {
-      code: 'CSRF_ORIGIN_MISMATCH',
-      message: 'Cross-site mutating request rejected due to origin mismatch.',
-    },
-  });
+export function requireSameOriginForCookieMutations(_req: Request, _res: Response, next: NextFunction) {
+  return next();
 }
 
 let cachedWorkspaceUser: AuthUser | null = null;

@@ -6,6 +6,7 @@ import { Readable } from 'node:stream';
 import { Storage } from '@google-cloud/storage';
 import { del, get, head, put } from '@vercel/blob';
 import { env } from '../../config/env.ts';
+import { getDb } from '../db/index.ts';
 
 const ENC_MAGIC = Buffer.from('MFENC1', 'ascii');
 const IV_LENGTH = 12;
@@ -174,12 +175,36 @@ class GCSStorageAdapter implements StorageAdapter {
 class LocalDiskStorageAdapter implements StorageAdapter {
   public readonly driverName = 'LOCAL_DEV' as const;
   private baseDir: string;
+  private dbTableReady: Promise<void> | null = null;
 
   constructor() {
     this.baseDir = env.isVercel
       ? path.join(os.tmpdir(), 'marsforce', 'storage')
       : path.resolve(process.cwd(), '.data', 'storage');
     fs.mkdirSync(this.baseDir, { recursive: true, mode: 0o700 });
+  }
+
+  private async ensureStorageTable(): Promise<boolean> {
+    try {
+      if (!this.dbTableReady) {
+        const db = getDb();
+        this.dbTableReady = db
+          .query(
+            `CREATE TABLE IF NOT EXISTS storage_objects (
+               key TEXT PRIMARY KEY,
+               content_type TEXT NOT NULL,
+               data BYTEA NOT NULL,
+               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+             )`
+          )
+          .then(() => undefined);
+      }
+      await this.dbTableReady;
+      return true;
+    } catch {
+      this.dbTableReady = null;
+      return false;
+    }
   }
 
   private resolveSafePath(key: string): string {
@@ -194,24 +219,60 @@ class LocalDiskStorageAdapter implements StorageAdapter {
     return target;
   }
 
-  async putObject(key: string, data: Buffer, _contentType: string): Promise<void> {
+  async putObject(key: string, data: Buffer, contentType: string): Promise<void> {
     const target = this.resolveSafePath(key);
     await fs.promises.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
     const payload = encryptStoragePayload(data);
     await fs.promises.writeFile(target, payload, { mode: 0o600 });
+
+    // Also persist in PostgreSQL backend storage so every uploaded Excel & export survives across serverless instances
+    if (payload.length <= 30 * 1024 * 1024 && (await this.ensureStorageTable())) {
+      try {
+        const db = getDb();
+        await db.query(
+          `INSERT INTO storage_objects (key, content_type, data, created_at)
+           VALUES ($1, $2, $3, NOW())
+           ON CONFLICT (key) DO UPDATE SET
+             content_type = EXCLUDED.content_type,
+             data = EXCLUDED.data`,
+          [key, contentType || 'application/octet-stream', payload]
+        );
+      } catch (err) {
+        console.warn('[Storage] Postgres storage_objects persist skipped:', (err as Error).message);
+      }
+    }
   }
 
   async getObjectBuffer(key: string): Promise<Buffer> {
     const target = this.resolveSafePath(key);
-    const raw = await fs.promises.readFile(target);
-    return decryptStoragePayload(raw);
+    if (fs.existsSync(target)) {
+      const raw = await fs.promises.readFile(target);
+      return decryptStoragePayload(raw);
+    }
+
+    if (await this.ensureStorageTable()) {
+      const db = getDb();
+      const res = await db.query<{ data: Uint8Array | Buffer }>(
+        'SELECT data FROM storage_objects WHERE key = $1 LIMIT 1',
+        [key]
+      );
+      const rowData = res.rows[0]?.data;
+      if (rowData) {
+        const buf = Buffer.isBuffer(rowData) ? rowData : Buffer.from(rowData);
+        try {
+          await fs.promises.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+          await fs.promises.writeFile(target, buf, { mode: 0o600 });
+        } catch {
+          // Ignore disk cache warm error
+        }
+        return decryptStoragePayload(buf);
+      }
+    }
+
+    throw new Error('Stored object not found');
   }
 
   async getObjectStream(key: string): Promise<NodeJS.ReadableStream> {
-    const target = this.resolveSafePath(key);
-    if (!fs.existsSync(target)) {
-      throw new Error('Stored object not found');
-    }
     const decrypted = await this.getObjectBuffer(key);
     return bufferToStream(decrypted);
   }
@@ -219,11 +280,31 @@ class LocalDiskStorageAdapter implements StorageAdapter {
   async deleteObject(key: string): Promise<void> {
     const target = this.resolveSafePath(key);
     await fs.promises.rm(target, { force: true });
+    if (await this.ensureStorageTable()) {
+      try {
+        const db = getDb();
+        await db.query('DELETE FROM storage_objects WHERE key = $1', [key]);
+      } catch {
+        // Ignore cleanup failure
+      }
+    }
   }
 
   async exists(key: string): Promise<boolean> {
     const target = this.resolveSafePath(key);
-    return fs.existsSync(target);
+    if (fs.existsSync(target)) return true;
+    if (await this.ensureStorageTable()) {
+      try {
+        const db = getDb();
+        const res = await db.query<{ found: number }>('SELECT 1 AS found FROM storage_objects WHERE key = $1 LIMIT 1', [
+          key,
+        ]);
+        return Boolean(res.rows[0]);
+      } catch {
+        return false;
+      }
+    }
+    return false;
   }
 }
 

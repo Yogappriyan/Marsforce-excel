@@ -66,10 +66,10 @@ export function AdminView() {
     try {
       await apiRequest('/api/v1/users', { method: 'POST', body: JSON.stringify(newUser) });
       setNewUser({ email: '', fullName: '', role: 'DATA_PROCESSOR' });
-      setMsg('Google user authorized successfully.');
+      setMsg('Workspace member added successfully.');
       await loadData();
     } catch (err) {
-      setErrMsg(err instanceof ApiError ? err.message : 'Could not authorize user');
+      setErrMsg(err instanceof ApiError ? err.message : 'Could not add workspace member');
     }
   };
 

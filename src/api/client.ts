@@ -1,69 +1,6 @@
 const rawBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) || '';
 export const API_BASE_URL = rawBase.replace(/\/+$/, '');
 
-let memAccessToken: string | null = null;
-let memRefreshToken: string | null = null;
-let authGeneration = 0;
-let unauthorizedHandler: (() => void) | null = null;
-let bearerTokenProvider: ((forceRefresh?: boolean) => Promise<string | null>) | null = null;
-
-export function registerBearerTokenProvider(
-  provider: ((forceRefresh?: boolean) => Promise<string | null>) | null
-) {
-  bearerTokenProvider = provider;
-}
-
-export function setClientAuthTokens(accessToken?: string | null, refreshToken?: string | null) {
-  if (accessToken !== undefined) {
-    memAccessToken = accessToken || null;
-  }
-  if (refreshToken !== undefined) {
-    memRefreshToken = refreshToken || null;
-  }
-  if (accessToken || refreshToken) {
-    authGeneration++;
-  }
-}
-
-export function clearClientAuthTokens() {
-  memAccessToken = null;
-  memRefreshToken = null;
-  authGeneration++;
-}
-
-export function getAccessToken(): string | null {
-  return memAccessToken;
-}
-
-export function getRefreshToken(): string | null {
-  return memRefreshToken;
-}
-
-export function getAuthHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
-export async function resolveBearerHeaders(forceRefresh = false): Promise<Record<string, string>> {
-  if (bearerTokenProvider) {
-    try {
-      const idToken = await bearerTokenProvider(forceRefresh);
-      if (idToken) {
-        return { Authorization: `Bearer ${idToken}` };
-      }
-    } catch {
-      // Fallback to in-memory session token or HttpOnly cookie
-    }
-  }
-  return getAuthHeaders();
-}
-
-export const getFreshAuthHeaders = resolveBearerHeaders;
-
-export function registerUnauthorizedHandler(handler: (() => void) | null) {
-  unauthorizedHandler = handler;
-}
-
 export class ApiError extends Error {
   public readonly status: number;
   public readonly code: string;
@@ -76,112 +13,70 @@ export class ApiError extends Error {
   }
 }
 
-type RefreshResult = 'ok' | 'unauthorized' | 'error';
-
-let refreshPromise: Promise<RefreshResult> | null = null;
-
-async function tryRefreshSession(): Promise<RefreshResult> {
-  if (bearerTokenProvider) {
+async function parseErrorResponse(res: Response, fallbackPrefix: string): Promise<{ code: string; message: string; details?: unknown }> {
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
     try {
-      const refreshedToken = await bearerTokenProvider(true);
-      if (refreshedToken) {
-        return 'ok';
+      const data = await res.json();
+      const errObj = data?.error;
+      if (errObj?.message) {
+        return {
+          code: errObj.code || `HTTP_${res.status}`,
+          message: errObj.message,
+          details: errObj.details,
+        };
       }
     } catch {
-      // Fall through to cookie/refresh endpoint
+      // Fall through to text handling
     }
   }
-  if (!refreshPromise) {
-    const reqGeneration = authGeneration;
-    const rt = getRefreshToken();
-    refreshPromise = fetch(`${API_BASE_URL}/api/v1/auth/refresh`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(rt ? { refreshToken: rt } : {}),
-    })
-      .then(async (res): Promise<RefreshResult> => {
-        if (!res.ok) {
-          if ((res.status === 401 || res.status === 403) && reqGeneration === authGeneration) {
-            clearClientAuthTokens();
-            return 'unauthorized';
-          }
-          return 'error';
-        }
-        try {
-          const data = await res.json();
-          if (data?.accessToken || data?.refreshToken) {
-            setClientAuthTokens(data.accessToken, data.refreshToken);
-          }
-        } catch {
-          // Ignore non-JSON refresh payload
-        }
-        return 'ok';
-      })
-      .catch((): RefreshResult => 'error')
-      .finally(() => {
-        refreshPromise = null;
-      });
+
+  let textSnippet = '';
+  try {
+    const rawText = await res.text();
+    const trimmed = rawText.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    if (trimmed) {
+      textSnippet = trimmed.slice(0, 220);
+    }
+  } catch {
+    // Ignore read error
   }
-  return refreshPromise;
+
+  if (res.status === 413) {
+    return {
+      code: 'FILE_TOO_LARGE',
+      message: textSnippet || 'Uploaded file exceeds the request body limit (4.5 MB on Vercel serverless or configured server limit).',
+    };
+  }
+
+  return {
+    code: `HTTP_${res.status}`,
+    message: textSnippet || `${fallbackPrefix} (status ${res.status})`,
+  };
 }
 
 export async function apiRequest<T>(
   path: string,
   options: RequestInit & { skipAutoRefresh?: boolean } = {}
 ): Promise<T> {
-  const { skipAutoRefresh, headers, ...rest } = options;
-  const reqGeneration = authGeneration;
+  const { skipAutoRefresh: _ignored, headers, ...rest } = options;
   const isFormData = rest.body instanceof FormData;
-  const authHeaders = await resolveBearerHeaders(false);
   const res = await fetch(`${API_BASE_URL}${path}`, {
     ...rest,
     credentials: 'include',
     headers: {
       ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
-      ...authHeaders,
       ...(headers || {}),
     },
   });
 
-  const isPublicAuthRoute =
-    path.includes('/auth/google') ||
-    path.includes('/auth/refresh') ||
-    path.includes('/auth/status') ||
-    path.includes('/auth/logout');
-
-  if (res.status === 401 && !isPublicAuthRoute) {
-    if (reqGeneration !== authGeneration) {
-      return apiRequest<T>(path, { ...options, skipAutoRefresh: true });
-    }
-    if (!skipAutoRefresh) {
-      const refreshResult = await tryRefreshSession();
-      if (refreshResult === 'ok' || reqGeneration !== authGeneration) {
-        return apiRequest<T>(path, { ...options, skipAutoRefresh: true });
-      }
-      if (refreshResult === 'unauthorized' && reqGeneration === authGeneration) {
-        clearClientAuthTokens();
-        unauthorizedHandler?.();
-      }
-    } else if (reqGeneration === authGeneration) {
-      clearClientAuthTokens();
-      unauthorizedHandler?.();
-    }
+  if (!res.ok) {
+    const parsed = await parseErrorResponse(res, 'Request failed');
+    throw new ApiError(res.status, parsed.code, parsed.message, parsed.details);
   }
 
   const contentType = res.headers.get('content-type') || '';
   const data = contentType.includes('application/json') ? await res.json() : null;
-
-  if (!res.ok) {
-    const errObj = data?.error;
-    throw new ApiError(
-      res.status,
-      errObj?.code || `HTTP_${res.status}`,
-      errObj?.message || `Request failed with status ${res.status}`,
-      errObj?.details
-    );
-  }
-
   return data as T;
 }
 
@@ -190,35 +85,13 @@ export function buildApiUrl(path: string): string {
 }
 
 export async function downloadAuthenticatedFile(path: string, fallbackFilename: string): Promise<void> {
-  const reqGeneration = authGeneration;
-  const doFetch = async (forceRefresh = false) =>
-    fetch(`${API_BASE_URL}${path}`, {
-      credentials: 'include',
-      headers: await resolveBearerHeaders(forceRefresh),
-    });
-  let res = await doFetch(false);
-  if (res.status === 401) {
-    if (reqGeneration !== authGeneration) {
-      res = await doFetch(true);
-    } else {
-      const refreshResult = await tryRefreshSession();
-      if (refreshResult === 'ok' || reqGeneration !== authGeneration) {
-        res = await doFetch(true);
-      } else if (res.status === 401 && refreshResult === 'unauthorized' && reqGeneration === authGeneration) {
-        clearClientAuthTokens();
-        unauthorizedHandler?.();
-      }
-    }
-  }
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    credentials: 'include',
+  });
+
   if (!res.ok) {
-    let msg = `Download failed (${res.status})`;
-    try {
-      const data = await res.json();
-      if (data?.error?.message) msg = data.error.message;
-    } catch {
-      // ignore non-json
-    }
-    throw new ApiError(res.status, `HTTP_${res.status}`, msg);
+    const parsed = await parseErrorResponse(res, 'Download failed');
+    throw new ApiError(res.status, parsed.code, parsed.message, parsed.details);
   }
 
   const blob = await res.blob();

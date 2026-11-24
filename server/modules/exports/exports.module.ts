@@ -512,9 +512,23 @@ export function createExportsRouter() {
         metadata: { format: dbFormat, exportMode, isZip, splitBy: body.splitBy },
       });
 
-      jobWorker.wake();
+      if (jobWorker.isRunning) {
+        jobWorker.wake();
+        return res.status(202).json({
+          exportRecord: sanitizeExportDto({ ...expRes.rows[0], job_id: jobRes.rows[0].id }),
+          job: jobRes.rows[0],
+        });
+      }
+
+      await jobWorker.advanceUntilSettled(3500);
+      const updatedExp = await db.query(
+        `SELECT e.*, u.full_name AS requested_by_name
+         FROM exports e LEFT JOIN users u ON u.id = e.requested_by
+         WHERE e.id = $1`,
+        [exportId]
+      );
       res.status(202).json({
-        exportRecord: sanitizeExportDto({ ...expRes.rows[0], job_id: jobRes.rows[0].id }),
+        exportRecord: sanitizeExportDto(updatedExp.rows[0] || { ...expRes.rows[0], job_id: jobRes.rows[0].id }),
         job: jobRes.rows[0],
       });
     } catch (err) {
@@ -542,7 +556,7 @@ export function createExportsRouter() {
     try {
       const db = getDb();
       const id = String(req.params.id);
-      const r = await db.query(
+      let r = await db.query(
         `SELECT e.*, u.full_name AS requested_by_name
          FROM exports e
          LEFT JOIN users u ON u.id = e.requested_by
@@ -552,7 +566,16 @@ export function createExportsRouter() {
       if (!r.rows[0]) {
         return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Export not found.' } });
       }
-      if (env.isVercel && (r.rows[0].status === 'QUEUED' || r.rows[0].status === 'RUNNING')) {
+      if (!jobWorker.isRunning && (r.rows[0].status === 'QUEUED' || r.rows[0].status === 'RUNNING')) {
+        await jobWorker.advanceUntilSettled(2500);
+        r = await db.query(
+          `SELECT e.*, u.full_name AS requested_by_name
+           FROM exports e
+           LEFT JOIN users u ON u.id = e.requested_by
+           WHERE e.id = $1`,
+          [id]
+        );
+      } else if (env.isVercel && (r.rows[0].status === 'QUEUED' || r.rows[0].status === 'RUNNING')) {
         jobWorker.wake();
       }
       res.json({ exportRecord: sanitizeExportDto(r.rows[0]) });

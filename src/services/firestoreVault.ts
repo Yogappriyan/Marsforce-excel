@@ -141,7 +141,7 @@ export async function backupUploadToFirestore(
   checksumVerified: boolean;
 }> {
   if (!ownerUid) {
-    throw new Error('Google authorization is required to sync uploads to Cloud Firestore.');
+    throw new Error('Connect Google Backup to sync uploads to Cloud Firestore Vault.');
   }
 
   const uploadDocId = sanitizeDocId(uploadId);

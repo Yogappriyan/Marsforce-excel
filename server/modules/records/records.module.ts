@@ -93,13 +93,15 @@ export function buildRecordFilterClause(query: Record<string, unknown>) {
       conds.push(`(cr.area IS NULL OR TRIM(cr.area) = '')`);
     } else {
       params.push(normalizeGeoGroupKey(a));
-      conds.push(`LOWER(REGEXP_REPLACE(TRIM(COALESCE(cr.area, '')), '\\s+', ' ', 'g')) = $${params.length}`);
+      conds.push(
+        `LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(BOTH ' -:;|,.' FROM COALESCE(cr.area, '')), '\\s*-\\s*', ' - ', 'g'), '\\s+', ' ', 'g')) = $${params.length}`
+      );
     }
   }
   if (typeof query.streetGroup === 'string' && query.streetGroup.trim()) {
     params.push(normalizeGeoGroupKey(query.streetGroup));
     conds.push(
-      `LOWER(REGEXP_REPLACE(TRIM(COALESCE(NULLIF(cr.street_group, ''), 'UNIDENTIFIED')), '\\s+', ' ', 'g')) = $${params.length}`
+      `LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(BOTH ' -:;|,.' FROM COALESCE(NULLIF(cr.street_group, ''), 'UNIDENTIFIED')), '\\s*-\\s*', ' - ', 'g'), '\\s+', ' ', 'g')) = $${params.length}`
     );
   }
   if (typeof query.geoStatus === 'string' && query.geoStatus.trim()) {

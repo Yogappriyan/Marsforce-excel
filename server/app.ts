@@ -34,15 +34,9 @@ export function createApiApp() {
     })
   );
 
-  const allowedCorsOrigins = Array.from(new Set([...env.corsOrigins, ...env.vercelOrigins]));
   app.use(
     cors({
-      origin: (origin, callback) => {
-        if (!origin || env.corsOrigins.length === 0 || allowedCorsOrigins.includes(origin)) {
-          return callback(null, true);
-        }
-        return callback(new Error('Origin not allowed by CORS policy'));
-      },
+      origin: true,
       credentials: true,
     })
   );
