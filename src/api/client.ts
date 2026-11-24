@@ -8,6 +8,7 @@ const LEGACY_REFRESH_KEY = 'structiq_refresh_token';
 
 let memAccessToken: string | null = null;
 let memRefreshToken: string | null = null;
+let authGeneration = 0;
 let unauthorizedHandler: (() => void) | null = null;
 
 function readStorage(key: string, legacyKey?: string): string | null {
@@ -47,11 +48,15 @@ export function setClientAuthTokens(accessToken?: string | null, refreshToken?: 
     memRefreshToken = refreshToken || null;
     writeStorage(REFRESH_KEY, memRefreshToken, LEGACY_REFRESH_KEY);
   }
+  if (accessToken || refreshToken) {
+    authGeneration++;
+  }
 }
 
 export function clearClientAuthTokens() {
   memAccessToken = null;
   memRefreshToken = null;
+  authGeneration++;
   writeStorage(ACCESS_KEY, null, LEGACY_ACCESS_KEY);
   writeStorage(REFRESH_KEY, null, LEGACY_REFRESH_KEY);
 }
@@ -89,6 +94,7 @@ let refreshPromise: Promise<boolean> | null = null;
 
 async function tryRefreshSession(): Promise<boolean> {
   if (!refreshPromise) {
+    const reqGeneration = authGeneration;
     const rt = getRefreshToken();
     refreshPromise = fetch(`${API_BASE_URL}/api/v1/auth/refresh`, {
       method: 'POST',
@@ -98,7 +104,9 @@ async function tryRefreshSession(): Promise<boolean> {
     })
       .then(async (res) => {
         if (!res.ok) {
-          clearClientAuthTokens();
+          if (res.status === 401 && reqGeneration === authGeneration) {
+            clearClientAuthTokens();
+          }
           return false;
         }
         try {
@@ -124,6 +132,7 @@ export async function apiRequest<T>(
   options: RequestInit & { skipAutoRefresh?: boolean } = {}
 ): Promise<T> {
   const { skipAutoRefresh, headers, ...rest } = options;
+  const reqGeneration = authGeneration;
   const isFormData = rest.body instanceof FormData;
   const res = await fetch(`${API_BASE_URL}${path}`, {
     ...rest,
@@ -143,14 +152,20 @@ export async function apiRequest<T>(
     path.includes('/auth/logout');
 
   if (res.status === 401 && !isPublicAuthRoute) {
+    // If the user re-authenticated while this request was in flight, retry with the fresh session
+    if (reqGeneration !== authGeneration) {
+      return apiRequest<T>(path, { ...options, skipAutoRefresh: true });
+    }
     if (!skipAutoRefresh) {
       const refreshed = await tryRefreshSession();
-      if (refreshed) {
+      if (refreshed || reqGeneration !== authGeneration) {
         return apiRequest<T>(path, { ...options, skipAutoRefresh: true });
       }
     }
-    clearClientAuthTokens();
-    unauthorizedHandler?.();
+    if (reqGeneration === authGeneration) {
+      clearClientAuthTokens();
+      unauthorizedHandler?.();
+    }
   }
 
   const contentType = res.headers.get('content-type') || '';
@@ -174,6 +189,7 @@ export function buildApiUrl(path: string): string {
 }
 
 export async function downloadAuthenticatedFile(path: string, fallbackFilename: string): Promise<void> {
+  const reqGeneration = authGeneration;
   const doFetch = () =>
     fetch(`${API_BASE_URL}${path}`, {
       credentials: 'include',
@@ -181,11 +197,15 @@ export async function downloadAuthenticatedFile(path: string, fallbackFilename: 
     });
   let res = await doFetch();
   if (res.status === 401) {
-    const refreshed = await tryRefreshSession();
-    if (refreshed) {
+    if (reqGeneration !== authGeneration) {
       res = await doFetch();
+    } else {
+      const refreshed = await tryRefreshSession();
+      if (refreshed || reqGeneration !== authGeneration) {
+        res = await doFetch();
+      }
     }
-    if (res.status === 401) {
+    if (res.status === 401 && reqGeneration === authGeneration) {
       clearClientAuthTokens();
       unauthorizedHandler?.();
     }

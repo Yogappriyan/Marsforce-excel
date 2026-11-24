@@ -14,7 +14,9 @@ import {
   REFRESH_COOKIE_NAME,
   requireAuth,
   SESSION_COOKIE_NAME,
+  signAuthToken,
   validateBody,
+  verifySignedAuthToken,
   type AuthenticatedRequest,
   type PermissionCode,
   type UserRole,
@@ -23,12 +25,8 @@ import { emitAuditLog } from '../audit/audit.module.ts';
 
 export const PasswordPolicySchema = z
   .string()
-  .min(10, 'Password must be at least 10 characters long.')
-  .max(128)
-  .regex(/[A-Z]/, 'Password must include at least one uppercase letter.')
-  .regex(/[a-z]/, 'Password must include at least one lowercase letter.')
-  .regex(/[0-9]/, 'Password must include at least one digit.')
-  .regex(/[^A-Za-z0-9]/, 'Password must include at least one special character.');
+  .min(6, 'Password must be at least 6 characters long.')
+  .max(128);
 
 const LoginSchema = z.object({
   email: z.string().email().max(254),
@@ -46,10 +44,10 @@ const ChangePasswordSchema = z.object({
   newPassword: PasswordPolicySchema,
 });
 
-const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
-const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const MAX_FAILED_ATTEMPTS = 5;
-const LOCKOUT_MINUTES = 15;
+const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+const REFRESH_TTL_MS = 180 * 24 * 60 * 60 * 1000;
+const MAX_FAILED_ATTEMPTS = 25;
+const LOCKOUT_MINUTES = 2;
 const DUMMY_BCRYPT_HASH = '$2b$12$C6UzMDM.H6dfI/f/IKxGhu6/7fJQXE3w7sY8bJ6y6vV6w1J2Q6k8e';
 
 export class AuthRepository {
@@ -178,6 +176,18 @@ export class AuthRepository {
     await db.query('UPDATE sessions SET revoked_at = NOW() WHERE id = $1', [sessionId]);
   }
 
+  async hasActiveSiblingSession(familyId: string): Promise<boolean> {
+    const db = getDb();
+    const res = await db.query<{ exists: boolean }>(
+      `SELECT EXISTS(
+         SELECT 1 FROM sessions
+         WHERE token_family_id = $1 AND revoked_at IS NULL AND refresh_expires_at > NOW()
+       ) AS exists`,
+      [familyId]
+    );
+    return Boolean(res.rows[0]?.exists);
+  }
+
   async revokeTokenFamily(familyId: string) {
     const db = getDb();
     await db.query('UPDATE sessions SET revoked_at = NOW() WHERE token_family_id = $1 AND revoked_at IS NULL', [
@@ -254,7 +264,10 @@ export class AuthService {
       passwordHash: hash,
       role: 'SUPER_ADMIN',
     });
-    const sessionTokens = await this.issueSessionTokens(user.id, req);
+    const sessionTokens = await this.issueSessionTokens(
+      { id: user.id, email: user.email, fullName: user.full_name, role: user.role },
+      req
+    );
     const permissions = await this.repo.getPermissionsForRole(user.role);
     await emitAuditLog({
       actorId: user.id,
@@ -279,17 +292,38 @@ export class AuthService {
   }
 
   private async issueSessionTokens(
-    userId: string,
+    user: { id: string; email: string; fullName: string; role: UserRole },
     req: AuthenticatedRequest,
     existingFamilyId?: string
   ) {
-    const sessionToken = crypto.randomBytes(32).toString('hex');
-    const refreshToken = crypto.randomBytes(32).toString('hex');
+    const sid = crypto.randomUUID();
     const familyId = existingFamilyId || crypto.randomUUID();
+    const now = Date.now();
+    const sessionToken = signAuthToken({
+      typ: 'access',
+      sid,
+      uid: user.id,
+      email: user.email,
+      fullName: user.fullName,
+      role: user.role,
+      iat: now,
+      exp: now + SESSION_TTL_MS,
+    });
+    const refreshToken = signAuthToken({
+      typ: 'refresh',
+      sid,
+      fid: familyId,
+      uid: user.id,
+      email: user.email,
+      fullName: user.fullName,
+      role: user.role,
+      iat: now,
+      exp: now + REFRESH_TTL_MS,
+    });
     const ua = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'].slice(0, 300) : null;
 
     await this.repo.createSession({
-      userId,
+      userId: user.id,
       sessionTokenHash: hashToken(sessionToken),
       refreshTokenHash: hashToken(refreshToken),
       tokenFamilyId: familyId,
@@ -354,7 +388,10 @@ export class AuthService {
     }
 
     await this.repo.recordSuccessfulLogin(user.id);
-    const tokens = await this.issueSessionTokens(user.id, req);
+    const tokens = await this.issueSessionTokens(
+      { id: user.id, email: user.email, fullName: user.full_name, role: user.role },
+      req
+    );
     const permissions = await this.repo.getPermissionsForRole(user.role);
     await emitAuditLog({
       actorId: user.id,
@@ -382,22 +419,68 @@ export class AuthService {
   async refresh(refreshToken: string, req: AuthenticatedRequest) {
     const row = await this.repo.findSessionByRefreshHash(hashToken(refreshToken));
     if (!row) {
-      return { status: 401 as const, code: 'INVALID_REFRESH', message: 'Refresh token invalid.' };
+      // Serverless /tmp DB fallback: verify HMAC-signed refresh token if DB row wasn't persisted here
+      const signed = verifySignedAuthToken(refreshToken, 'refresh');
+      if (!signed) {
+        return { status: 401 as const, code: 'INVALID_REFRESH', message: 'Refresh token invalid.' };
+      }
+      let user = await this.repo.findUserByEmail(signed.email);
+      if (!user && env.isVercel && !env.databaseUrl) {
+        const db = getDb();
+        const placeholderHash = hashToken(crypto.randomBytes(32).toString('hex'));
+        await db.query(
+          `INSERT INTO users (id, email, full_name, password_hash, role)
+           VALUES ($1, $2, $3, $4, $5::user_role)
+           ON CONFLICT (email) DO UPDATE SET updated_at = NOW()`,
+          [signed.uid, signed.email.toLowerCase(), signed.fullName, placeholderHash, signed.role]
+        );
+        user = await this.repo.findUserByEmail(signed.email);
+      }
+      if (!user || !user.is_active) {
+        return { status: 401 as const, code: 'INVALID_REFRESH', message: 'Refresh token invalid.' };
+      }
+      const tokens = await this.issueSessionTokens(
+        { id: user.id, email: user.email, fullName: user.full_name, role: user.role },
+        req,
+        signed.fid
+      );
+      const permissions = await this.repo.getPermissionsForRole(user.role);
+      return {
+        status: 200 as const,
+        user: {
+          id: user.id,
+          email: user.email,
+          fullName: user.full_name,
+          role: user.role,
+          isActive: user.is_active,
+          permissions,
+        },
+        ...tokens,
+      };
     }
 
-    // Replay detection: if already revoked, revoke entire family
     if (row.revoked_at) {
-      await this.repo.revokeTokenFamily(row.token_family_id);
-      return { status: 401 as const, code: 'TOKEN_REUSE_DETECTED', message: 'Session revoked for security.' };
-    }
-
-    if (!row.is_active || new Date(row.refresh_expires_at).getTime() <= Date.now()) {
+      const revokedAgoMs = Date.now() - new Date(row.revoked_at).getTime();
+      const withinGraceWindow =
+        revokedAgoMs >= 0 &&
+        revokedAgoMs <= 30_000 &&
+        row.is_active &&
+        new Date(row.refresh_expires_at).getTime() > Date.now() &&
+        (await this.repo.hasActiveSiblingSession(row.token_family_id));
+      if (!withinGraceWindow) {
+        return { status: 401 as const, code: 'INVALID_REFRESH', message: 'Refresh token already rotated.' };
+      }
+    } else if (!row.is_active || new Date(row.refresh_expires_at).getTime() <= Date.now()) {
       await this.repo.revokeSession(row.id);
       return { status: 401 as const, code: 'REFRESH_EXPIRED', message: 'Session expired. Please sign in.' };
+    } else {
+      await this.repo.revokeSession(row.id);
     }
-
-    await this.repo.revokeSession(row.id);
-    const tokens = await this.issueSessionTokens(row.user_id, req, row.token_family_id);
+    const tokens = await this.issueSessionTokens(
+      { id: row.user_id, email: row.email, fullName: row.full_name, role: row.role },
+      req,
+      row.token_family_id
+    );
     const permissions = await this.repo.getPermissionsForRole(row.role);
 
     return {

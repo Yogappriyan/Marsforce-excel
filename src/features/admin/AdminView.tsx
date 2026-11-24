@@ -256,7 +256,7 @@ export function AdminView() {
               <input
                 type="password"
                 required
-                placeholder="Password (10+ chars, mixed+symbol)"
+                placeholder="Password (6+ chars)"
                 value={newUser.password}
                 onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
                 className="px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
@@ -280,7 +280,7 @@ export function AdminView() {
               </button>
             </div>
             <p className="text-[11px] text-slate-500 dark:text-slate-400">
-              Password policy: minimum 10 characters with uppercase, lowercase, number, and special symbol.
+              Password policy: minimum 6 characters.
             </p>
           </form>
 
@@ -392,7 +392,7 @@ export function AdminView() {
                 <input
                   type="password"
                   required
-                  placeholder="New password (10+ chars, mixed + symbol)"
+                  placeholder="New password (6+ chars)"
                   value={resetPassword}
                   onChange={(e) => setResetPassword(e.target.value)}
                   className="w-full px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"

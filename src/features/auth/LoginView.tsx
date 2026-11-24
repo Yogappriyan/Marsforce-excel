@@ -164,7 +164,7 @@ export function LoginView() {
             </div>
             {needsInitialSetup && (
               <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
-                Minimum 10 characters with uppercase, lowercase, digit, and symbol.
+                Minimum 6 characters.
               </p>
             )}
           </div>
@@ -185,7 +185,7 @@ export function LoginView() {
 
       <footer className="max-w-5xl w-full mx-auto text-xs text-slate-500 dark:text-slate-400 flex items-center justify-between">
         <span>MARSFORCE — Excel Management</span>
-        <span>Cookie-secured session · Role-based access</span>
+        <span>Persistent sign-in · Role-based access</span>
       </footer>
     </div>
   );

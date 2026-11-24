@@ -46,6 +46,53 @@ export function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
+export interface SignedTokenPayload {
+  typ: 'access' | 'refresh';
+  sid: string;
+  fid?: string;
+  uid: string;
+  email: string;
+  fullName: string;
+  role: UserRole;
+  iat: number;
+  exp: number;
+}
+
+export function signAuthToken(payload: SignedTokenPayload): string {
+  const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const sig = crypto.createHmac('sha256', env.sessionSecret).update(encoded).digest('base64url');
+  return `mf1.${encoded}.${sig}`;
+}
+
+export function verifySignedAuthToken(
+  token: string | undefined,
+  expectedType: 'access' | 'refresh'
+): SignedTokenPayload | null {
+  if (!token || !token.startsWith('mf1.')) return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [, encoded, providedSig] = parts;
+  if (!encoded || !providedSig) return null;
+  try {
+    const expectedSig = crypto.createHmac('sha256', env.sessionSecret).update(encoded).digest('base64url');
+    const a = Buffer.from(providedSig, 'utf8');
+    const b = Buffer.from(expectedSig, 'utf8');
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      return null;
+    }
+    const decoded = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as SignedTokenPayload;
+    if (decoded.typ !== expectedType || !decoded.uid || !decoded.email || !decoded.exp) {
+      return null;
+    }
+    if (decoded.exp <= Date.now()) {
+      return null;
+    }
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
 function isRequestHttps(req: Request): boolean {
   const xfProto = String(req.headers['x-forwarded-proto'] || '')
     .split(',')[0]
@@ -98,13 +145,13 @@ export function getClearCookieOptions(req: Request): CookieOptions {
 
 export const loginRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 25,
+  max: 120,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
     error: {
       code: 'RATE_LIMITED',
-      message: 'Too many authentication attempts. Please try again in 15 minutes.',
+      message: 'Too many authentication attempts. Please try again shortly.',
     },
   },
 });
@@ -225,7 +272,12 @@ export function requireSameOriginForCookieMutations(req: Request, res: Response,
     // Ignore placeholder APP_URL
   }
 
-  if (parsedSource.host === expectedHost || allowedOrigins.has(parsedSource.origin)) {
+  const normalizeLocalLoopback = (host: string) => host.replace(/^127\.0\.0\.1(?=:|$)/, 'localhost');
+  if (
+    parsedSource.host === expectedHost ||
+    normalizeLocalLoopback(parsedSource.host) === normalizeLocalLoopback(expectedHost) ||
+    allowedOrigins.has(parsedSource.origin)
+  ) {
     return next();
   }
 
@@ -272,37 +324,117 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       role: UserRole;
       is_active: boolean;
       expires_at: Date | string;
+      revoked_at: Date | string | null;
     }>(
-      `SELECT s.id AS session_id, u.id AS user_id, u.email, u.full_name, u.role, u.is_active, s.expires_at
+      `SELECT s.id AS session_id, u.id AS user_id, u.email, u.full_name, u.role, u.is_active, s.expires_at, s.revoked_at
        FROM sessions s
        JOIN users u ON u.id = s.user_id
        WHERE s.session_token_hash = ANY($1::text[])
-         AND s.revoked_at IS NULL
-         AND s.expires_at > NOW()
-       ORDER BY CASE WHEN $2::text IS NOT NULL AND s.session_token_hash = $2 THEN 0 ELSE 1 END, s.created_at DESC
+       ORDER BY CASE WHEN s.revoked_at IS NULL AND s.expires_at > NOW() THEN 0 ELSE 1 END,
+                CASE WHEN $2::text IS NOT NULL AND s.session_token_hash = $2 THEN 0 ELSE 1 END,
+                s.created_at DESC
        LIMIT 1`,
       [tokenHashes, bearerHash]
     );
 
     const row = result.rows[0];
-    if (!row || !row.is_active) {
-      return res.status(401).json({
-        error: { code: 'SESSION_INVALID', message: 'Session expired or invalid. Please sign in again.' },
-      });
+    let resolvedUser: {
+      sessionId: string;
+      id: string;
+      email: string;
+      fullName: string;
+      role: UserRole;
+      isActive: boolean;
+    } | null = null;
+
+    if (row) {
+      if (row.revoked_at || new Date(row.expires_at).getTime() <= Date.now() || !row.is_active) {
+        return res.status(401).json({
+          error: { code: 'SESSION_INVALID', message: 'Session expired or invalid. Please sign in again.' },
+        });
+      }
+      resolvedUser = {
+        sessionId: row.session_id,
+        id: row.user_id,
+        email: row.email,
+        fullName: row.full_name,
+        role: row.role,
+        isActive: row.is_active,
+      };
+    } else {
+      // Fallback for serverless cold starts or recycled ephemeral /tmp databases: verify HMAC-signed session token
+      const signed =
+        verifySignedAuthToken(bearerToken, 'access') ||
+        verifySignedAuthToken(cookieToken, 'access');
+      if (!signed) {
+        return res.status(401).json({
+          error: { code: 'SESSION_INVALID', message: 'Session expired or invalid. Please sign in again.' },
+        });
+      }
+
+      const userRes = await db.query<{
+        id: string;
+        email: string;
+        full_name: string;
+        role: UserRole;
+        is_active: boolean;
+      }>(
+        `SELECT id, email, full_name, role, is_active
+         FROM users
+         WHERE id = $1 OR LOWER(email) = LOWER($2)
+         ORDER BY CASE WHEN id = $1 THEN 0 ELSE 1 END
+         LIMIT 1`,
+        [signed.uid, signed.email]
+      );
+
+      let userRow = userRes.rows[0];
+      if (!userRow && env.isVercel && !env.databaseUrl) {
+        // Recreate verified user in fresh ephemeral serverless /tmp instance so foreign keys remain intact
+        const placeholderHash = hashToken(crypto.randomBytes(32).toString('hex'));
+        const insUser = await db.query<{
+          id: string;
+          email: string;
+          full_name: string;
+          role: UserRole;
+          is_active: boolean;
+        }>(
+          `INSERT INTO users (id, email, full_name, password_hash, role)
+           VALUES ($1, $2, $3, $4, $5::user_role)
+           ON CONFLICT (email) DO UPDATE SET updated_at = NOW()
+           RETURNING id, email, full_name, role, is_active`,
+          [signed.uid, signed.email.toLowerCase(), signed.fullName, placeholderHash, signed.role]
+        );
+        userRow = insUser.rows[0];
+      }
+
+      if (!userRow || !userRow.is_active) {
+        return res.status(401).json({
+          error: { code: 'SESSION_INVALID', message: 'Session expired or invalid. Please sign in again.' },
+        });
+      }
+
+      resolvedUser = {
+        sessionId: signed.sid,
+        id: userRow.id,
+        email: userRow.email,
+        fullName: userRow.full_name,
+        role: userRow.role,
+        isActive: userRow.is_active,
+      };
     }
 
     const permsRes = await db.query<{ permission: PermissionCode }>(
       `SELECT permission FROM role_permissions WHERE role = $1`,
-      [row.role]
+      [resolvedUser.role]
     );
 
-    req.sessionId = row.session_id;
+    req.sessionId = resolvedUser.sessionId;
     req.authUser = {
-      id: row.user_id,
-      email: row.email,
-      fullName: row.full_name,
-      role: row.role,
-      isActive: row.is_active,
+      id: resolvedUser.id,
+      email: resolvedUser.email,
+      fullName: resolvedUser.fullName,
+      role: resolvedUser.role,
+      isActive: resolvedUser.isActive,
       permissions: permsRes.rows.map((r) => r.permission),
     };
     next();

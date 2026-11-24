@@ -15,7 +15,7 @@ export function MarsforceLogo({ size = 34, className = '' }: MarsforceLogoProps)
     >
       {!failed ? (
         <img
-          src="/src/assets/images/marsforce_logo_1795342817280.jpg"
+          src="/src/assets/images/mfl.jpg"
           alt="MARSFORCE logo"
           width={size}
           height={size}

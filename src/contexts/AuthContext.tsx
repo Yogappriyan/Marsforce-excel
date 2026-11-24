@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import {
   apiRequest,
+  ApiError,
   clearClientAuthTokens,
   registerUnauthorizedHandler,
 } from '../api/client.ts';
@@ -38,9 +39,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         clearClientAuthTokens();
         setUser(null);
       }
-    } catch {
-      clearClientAuthTokens();
-      setUser(null);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        clearClientAuthTokens();
+        setUser(null);
+      }
     } finally {
       setLoading(false);
     }
