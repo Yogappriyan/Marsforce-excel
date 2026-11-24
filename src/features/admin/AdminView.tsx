@@ -16,11 +16,8 @@ export function AdminView() {
   const [newUser, setNewUser] = useState({
     email: '',
     fullName: '',
-    password: '',
     role: 'DATA_PROCESSOR' as UserRole,
   });
-  const [resetTarget, setResetTarget] = useState<{ id: string; email: string } | null>(null);
-  const [resetPassword, setResetPassword] = useState('');
 
   // Settings
   const [maxUploadMb, setMaxUploadMb] = useState<number>(50);
@@ -68,11 +65,11 @@ export function AdminView() {
     setMsg(null);
     try {
       await apiRequest('/api/v1/users', { method: 'POST', body: JSON.stringify(newUser) });
-      setNewUser({ email: '', fullName: '', password: '', role: 'DATA_PROCESSOR' });
-      setMsg('User created successfully.');
+      setNewUser({ email: '', fullName: '', role: 'DATA_PROCESSOR' });
+      setMsg('Google user authorized successfully.');
       await loadData();
     } catch (err) {
-      setErrMsg(err instanceof ApiError ? err.message : 'Could not create user');
+      setErrMsg(err instanceof ApiError ? err.message : 'Could not authorize user');
     }
   };
 
@@ -88,21 +85,6 @@ export function AdminView() {
     }
   };
 
-  const handleUnlockUser = async (id: string) => {
-    setErrMsg(null);
-    setMsg(null);
-    try {
-      await apiRequest(`/api/v1/users/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ unlockAccount: true }),
-      });
-      setMsg('User account unlocked.');
-      await loadData();
-    } catch (err) {
-      setErrMsg(err instanceof ApiError ? err.message : 'Failed to unlock account');
-    }
-  };
-
   const handleChangeRole = async (u: any, nextRole: UserRole) => {
     setErrMsg(null);
     setMsg(null);
@@ -115,24 +97,6 @@ export function AdminView() {
       await loadData();
     } catch (err) {
       setErrMsg(err instanceof ApiError ? err.message : 'Failed to update role');
-    }
-  };
-
-  const handleResetPasswordSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!resetTarget) return;
-    setErrMsg(null);
-    setMsg(null);
-    try {
-      await apiRequest(`/api/v1/users/${resetTarget.id}/reset-password`, {
-        method: 'POST',
-        body: JSON.stringify({ newPassword: resetPassword }),
-      });
-      setMsg(`Password reset for ${resetTarget.email}.`);
-      setResetTarget(null);
-      setResetPassword('');
-    } catch (err) {
-      setErrMsg(err instanceof ApiError ? err.message : 'Password reset failed');
     }
   };
 
@@ -234,9 +198,9 @@ export function AdminView() {
           >
             <div className="flex items-center gap-2 text-sm font-bold">
               <UserPlus className="w-4 h-4 text-blue-600" />
-              Create New User
+              Add Workspace Member
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
               <input
                 type="text"
                 required
@@ -248,17 +212,9 @@ export function AdminView() {
               <input
                 type="email"
                 required
-                placeholder="Work Email"
+                placeholder="Email Address"
                 value={newUser.email}
                 onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
-                className="px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
-              />
-              <input
-                type="password"
-                required
-                placeholder="Password (6+ chars)"
-                value={newUser.password}
-                onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
                 className="px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
               />
               <select
@@ -276,11 +232,11 @@ export function AdminView() {
                 type="submit"
                 className="px-4 py-2 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white cursor-pointer"
               >
-                Create User
+                Add Member
               </button>
             </div>
             <p className="text-[11px] text-slate-500 dark:text-slate-400">
-              Password policy: minimum 6 characters.
+              Manage workspace member directory and role assignments for audit tracking.
             </p>
           </form>
 
@@ -340,27 +296,6 @@ export function AdminView() {
                       {u.last_login_at ? new Date(u.last_login_at).toLocaleString() : 'Never'}
                     </td>
                     <td className="py-2.5 px-4 text-right space-x-3">
-                      {u.locked_until && new Date(u.locked_until) > new Date() && (
-                        <button
-                          type="button"
-                          onClick={() => void handleUnlockUser(u.id)}
-                          className="text-amber-600 hover:underline font-medium cursor-pointer"
-                        >
-                          Unlock
-                        </button>
-                      )}
-                      {!(u.role === 'SUPER_ADMIN' && user?.role !== 'SUPER_ADMIN') && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setResetTarget({ id: u.id, email: u.email });
-                            setResetPassword('');
-                          }}
-                          className="text-slate-600 dark:text-slate-300 hover:underline font-medium cursor-pointer"
-                        >
-                          Reset Password
-                        </button>
-                      )}
                       {u.id !== user?.id && (
                         <button
                           type="button"
@@ -377,44 +312,6 @@ export function AdminView() {
               </tbody>
             </table>
           </div>
-
-          {resetTarget && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-              <div className="fixed inset-0 bg-slate-900/50" onClick={() => setResetTarget(null)} />
-              <form
-                onSubmit={handleResetPasswordSubmit}
-                className="relative bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 w-full max-w-md space-y-4"
-              >
-                <h3 className="text-base font-bold">Reset Password</h3>
-                <p className="text-xs text-slate-500">
-                  Set a new password for <span className="font-semibold text-slate-800 dark:text-slate-200">{resetTarget.email}</span>. Active sessions will be revoked.
-                </p>
-                <input
-                  type="password"
-                  required
-                  placeholder="New password (6+ chars)"
-                  value={resetPassword}
-                  onChange={(e) => setResetPassword(e.target.value)}
-                  className="w-full px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
-                />
-                <div className="flex justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setResetTarget(null)}
-                    className="px-3.5 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-4 py-2 text-xs font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700"
-                  >
-                    Confirm Reset
-                  </button>
-                </div>
-              </form>
-            </div>
-          )}
         </div>
       )}
 

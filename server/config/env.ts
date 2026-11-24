@@ -1,8 +1,21 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import dotenv from 'dotenv';
 import { z } from 'zod';
 
 dotenv.config();
+
+let resolvedFirebaseProjectId = '';
+try {
+  const cfgPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
+  if (fs.existsSync(cfgPath)) {
+    const raw = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as { projectId?: string };
+    resolvedFirebaseProjectId = (raw.projectId || '').trim();
+  }
+} catch {
+  // Ignore unreadable firebase config
+}
 
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -64,6 +77,8 @@ const resolvedStorageDriver =
       ? 'gcs'
       : 'local');
 
+export const AUTHORIZED_PRIMARY_GOOGLE_EMAIL = 'vishwa10230506@gmail.com';
+
 export const env = {
   nodeEnv: parsed.NODE_ENV,
   isProd: parsed.NODE_ENV === 'production',
@@ -76,6 +91,8 @@ export const env = {
   dataEncryptionKey: parsed.DATA_ENCRYPTION_KEY.trim(),
   seedAdminEmail: parsed.SEED_ADMIN_EMAIL.trim().toLowerCase(),
   seedAdminPassword: parsed.SEED_ADMIN_PASSWORD,
+  authorizedGoogleEmail: AUTHORIZED_PRIMARY_GOOGLE_EMAIL,
+  firebaseProjectId: resolvedFirebaseProjectId,
   geminiApiKey: parsed.GEMINI_API_KEY.trim(),
   anthropicApiKey: parsed.ANTHROPIC_API_KEY.trim(),
   storageDriver: resolvedStorageDriver,

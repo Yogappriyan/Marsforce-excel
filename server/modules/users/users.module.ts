@@ -1,8 +1,9 @@
-import bcrypt from 'bcryptjs';
+import crypto from 'node:crypto';
 import { Router } from 'express';
 import { z } from 'zod';
 import { getDb } from '../../infrastructure/db/index.ts';
 import {
+  hashToken,
   requireAuth,
   requirePermission,
   validateBody,
@@ -11,14 +12,12 @@ import {
   type UserRole,
 } from '../../middleware/security.ts';
 import { emitAuditLog } from '../audit/audit.module.ts';
-import { PasswordPolicySchema } from '../auth/auth.module.ts';
 
 const RoleEnum = z.enum(['SUPER_ADMIN', 'ADMIN', 'DATA_PROCESSOR', 'REVIEWER', 'READ_ONLY']);
 
 const CreateUserSchema = z.object({
   email: z.string().email().max(254),
   fullName: z.string().trim().min(2).max(120),
-  password: PasswordPolicySchema,
   role: RoleEnum,
 });
 
@@ -27,10 +26,6 @@ const UpdateUserSchema = z.object({
   role: RoleEnum.optional(),
   isActive: z.boolean().optional(),
   unlockAccount: z.boolean().optional(),
-});
-
-const ResetPasswordSchema = z.object({
-  newPassword: PasswordPolicySchema,
 });
 
 const ListUsersQuerySchema = z.object({
@@ -70,7 +65,7 @@ export class UsersRepository {
     params.push(filters.pageSize, offset);
 
     const rowsRes = await db.query(
-      `SELECT id, email, full_name, role, is_active, failed_login_attempts, locked_until, last_login_at, created_at
+      `SELECT id, email, full_name, role, is_active, last_login_at, created_at
        FROM users ${whereClause}
        ORDER BY created_at DESC
        LIMIT $${params.length - 1} OFFSET $${params.length}`,
@@ -94,16 +89,16 @@ export class UsersRepository {
   async create(params: {
     email: string;
     fullName: string;
-    passwordHash: string;
     role: UserRole;
     createdBy: string;
   }) {
     const db = getDb();
+    const placeholderHash = hashToken(crypto.randomBytes(32).toString('hex'));
     const res = await db.query(
       `INSERT INTO users (email, full_name, password_hash, role, created_by)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id, email, full_name, role, is_active, created_at`,
-      [params.email.trim().toLowerCase(), params.fullName.trim(), params.passwordHash, params.role, params.createdBy]
+      [params.email.trim().toLowerCase(), params.fullName.trim(), placeholderHash, params.role, params.createdBy]
     );
     return res.rows[0];
   }
@@ -134,22 +129,13 @@ export class UsersRepository {
 
     const res = await db.query(
       `UPDATE users SET ${sets.join(', ')} WHERE id = $1
-       RETURNING id, email, full_name, role, is_active, failed_login_attempts, locked_until, last_login_at, created_at`,
+       RETURNING id, email, full_name, role, is_active, last_login_at, created_at`,
       params
     );
     if (patch.isActive === false) {
       await db.query('UPDATE sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL', [id]);
     }
     return res.rows[0];
-  }
-
-  async resetPassword(id: string, passwordHash: string) {
-    const db = getDb();
-    await db.query(
-      `UPDATE users SET password_hash = $2, password_changed_at = NOW(), failed_login_attempts = 0, locked_until = NULL, updated_at = NOW() WHERE id = $1`,
-      [id, passwordHash]
-    );
-    await db.query('UPDATE sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL', [id]);
   }
 }
 
@@ -176,11 +162,9 @@ export function createUsersRouter() {
           error: { code: 'FORBIDDEN', message: 'Only Super Admins can create Super Admin accounts.' },
         });
       }
-      const hash = await bcrypt.hash(body.password, 12);
       const user = await repo.create({
         email: body.email,
         fullName: body.fullName,
-        passwordHash: hash,
         role: body.role,
         createdBy: req.authUser!.id,
       });
@@ -236,34 +220,6 @@ export function createUsersRouter() {
         metadata: { changedKeys: Object.keys(body) },
       });
       res.json({ user: updated });
-    } catch (err) {
-      next(err);
-    }
-  });
-
-  router.post('/:id/reset-password', validateUuidParams('id'), validateBody(ResetPasswordSchema), async (req: AuthenticatedRequest, res, next) => {
-    try {
-      const id = String(req.params.id);
-      const target = await repo.findById(id);
-      if (!target) {
-        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'User not found.' } });
-      }
-      if (target.role === 'SUPER_ADMIN' && req.authUser!.role !== 'SUPER_ADMIN') {
-        return res.status(403).json({
-          error: { code: 'FORBIDDEN', message: 'Admins cannot reset Super Admin passwords.' },
-        });
-      }
-      const hash = await bcrypt.hash(req.body.newPassword, 12);
-      await repo.resetPassword(id, hash);
-      await emitAuditLog({
-        actorId: req.authUser!.id,
-        actorRole: req.authUser!.role,
-        action: 'USER_PASSWORD_RESET',
-        resourceType: 'user',
-        resourceId: id,
-        req,
-      });
-      res.json({ success: true });
     } catch (err) {
       next(err);
     }

@@ -1,8 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import {
   onAuthStateChanged,
-  signInWithPopup,
-  signOut,
   type User,
 } from 'firebase/auth';
 import {
@@ -15,10 +13,7 @@ import {
 import {
   auth,
   db,
-  firebaseProjectId,
-  googleProvider,
   handleFirestoreError,
-  isHostnameAuthorizedForFirebase,
   OperationType,
   testFirestoreConnection,
 } from '../lib/firebase.ts';
@@ -29,16 +24,18 @@ interface FirebaseContextValue {
   isVaultConnected: boolean;
   connectionOffline: boolean;
   connectionMessage: string | null;
-  signingIn: boolean;
   vaultAuthError: string | null;
-  signInWithGoogle: () => Promise<void>;
-  signOutFirebase: () => Promise<void>;
+  ensureVaultProfile: (user: User) => Promise<void>;
   clearVaultAuthError: () => void;
 }
 
 const FirebaseContext = createContext<FirebaseContextValue | null>(null);
 
 const syncInFlight = new Map<string, Promise<void>>();
+
+function isStillSignedInAs(uid: string): boolean {
+  return Boolean(auth.currentUser && auth.currentUser.uid === uid && auth.currentUser.emailVerified);
+}
 
 async function syncUserProfileToFirestore(user: User): Promise<void> {
   const existingRun = syncInFlight.get(user.uid);
@@ -50,8 +47,14 @@ async function syncUserProfileToFirestore(user: User): Promise<void> {
     if (!user.emailVerified || !user.email) {
       throw new Error('Verified Google email address is required for Firestore Backup Vault access.');
     }
+    if (!isStillSignedInAs(user.uid)) {
+      return;
+    }
 
     await user.getIdToken();
+    if (!isStillSignedInAs(user.uid)) {
+      return;
+    }
 
     const profilePath = `users/${user.uid}`;
     const profileRef = doc(db, 'users', user.uid);
@@ -61,7 +64,12 @@ async function syncUserProfileToFirestore(user: User): Promise<void> {
     try {
       existingProfile = await getDoc(profileRef);
     } catch (err) {
+      if (!isStillSignedInAs(user.uid)) return;
       handleFirestoreError(err, OperationType.GET, profilePath);
+    }
+
+    if (!isStillSignedInAs(user.uid)) {
+      return;
     }
 
     if (!existingProfile.exists()) {
@@ -74,6 +82,7 @@ async function syncUserProfileToFirestore(user: User): Promise<void> {
           updatedAt: serverTimestamp(),
         });
       } catch (err) {
+        if (!isStillSignedInAs(user.uid)) return;
         handleFirestoreError(err, OperationType.CREATE, profilePath);
       }
     } else if (existingProfile.data()?.displayName !== safeName) {
@@ -83,8 +92,13 @@ async function syncUserProfileToFirestore(user: User): Promise<void> {
           updatedAt: serverTimestamp(),
         });
       } catch (err) {
+        if (!isStillSignedInAs(user.uid)) return;
         handleFirestoreError(err, OperationType.UPDATE, profilePath);
       }
+    }
+
+    if (!isStillSignedInAs(user.uid)) {
+      return;
     }
 
     const piiPath = `users/${user.uid}/private/info`;
@@ -95,7 +109,12 @@ async function syncUserProfileToFirestore(user: User): Promise<void> {
     try {
       existingPii = await getDoc(piiRef);
     } catch (err) {
+      if (!isStillSignedInAs(user.uid)) return;
       handleFirestoreError(err, OperationType.GET, piiPath);
+    }
+
+    if (!isStillSignedInAs(user.uid)) {
+      return;
     }
 
     if (!existingPii.exists()) {
@@ -107,6 +126,7 @@ async function syncUserProfileToFirestore(user: User): Promise<void> {
           updatedAt: serverTimestamp(),
         });
       } catch (err) {
+        if (!isStillSignedInAs(user.uid)) return;
         handleFirestoreError(err, OperationType.CREATE, piiPath);
       }
     } else if (existingPii.data()?.email !== safeEmail) {
@@ -116,6 +136,7 @@ async function syncUserProfileToFirestore(user: User): Promise<void> {
           updatedAt: serverTimestamp(),
         });
       } catch (err) {
+        if (!isStillSignedInAs(user.uid)) return;
         handleFirestoreError(err, OperationType.UPDATE, piiPath);
       }
     }
@@ -132,7 +153,6 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
   const [authReady, setAuthReady] = useState(false);
   const [connectionOffline, setConnectionOffline] = useState(false);
   const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
-  const [signingIn, setSigningIn] = useState(false);
   const [vaultAuthError, setVaultAuthError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -148,56 +168,20 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setFirebaseUser(user);
       setAuthReady(true);
-      if (user && user.emailVerified) {
-        void syncUserProfileToFirestore(user).catch((err) => {
-          setVaultAuthError(
-            err instanceof Error ? err.message : 'Failed to initialize Firestore user vault profile.'
-          );
-        });
-      }
     });
     return () => unsubscribe();
   }, []);
 
-  const signInWithGoogle = useCallback(async () => {
-    setSigningIn(true);
+  const ensureVaultProfile = useCallback(async (user: User) => {
     setVaultAuthError(null);
     try {
-      const domainCheck = await isHostnameAuthorizedForFirebase();
-      if (!domainCheck.authorized) {
-        const host = typeof window !== 'undefined' ? window.location.hostname : 'this domain';
-        throw new Error(
-          `Domain "${host}" is not authorized in Firebase Authentication for project "${firebaseProjectId}". Add "${host}" under Firebase Console → Authentication → Settings → Authorized domains, or sign in via your authorized preview URL.`
-        );
-      }
-
-      const cred = await signInWithPopup(auth, googleProvider);
-      if (!cred.user.emailVerified) {
-        await signOut(auth);
-        throw new Error('Your Google account email must be verified to use the Cloud Backup Vault.');
-      }
-      await syncUserProfileToFirestore(cred.user);
-    } catch (err: any) {
-      const code = typeof err?.code === 'string' ? err.code : '';
-      let msg = err instanceof Error ? err.message : 'Google sign-in failed';
-      if (code === 'auth/unauthorized-domain') {
-        const host = typeof window !== 'undefined' ? window.location.hostname : 'this domain';
-        msg = `Domain "${host}" is not authorized in Firebase Authentication for project "${firebaseProjectId}". Add it in Firebase Console → Authentication → Settings → Authorized domains.`;
-      } else if (code === 'auth/popup-blocked') {
-        msg = 'Google sign-in popup was blocked by your browser. Please allow popups for this site and try again.';
-      } else if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-        msg = 'Google sign-in popup was closed before completing authentication.';
-      }
-      setVaultAuthError(msg);
-      throw err;
-    } finally {
-      setSigningIn(false);
+      await syncUserProfileToFirestore(user);
+    } catch (err) {
+      if (!isStillSignedInAs(user.uid)) return;
+      setVaultAuthError(
+        err instanceof Error ? err.message : 'Failed to initialize Firestore user vault profile.'
+      );
     }
-  }, []);
-
-  const signOutFirebase = useCallback(async () => {
-    setVaultAuthError(null);
-    await signOut(auth);
   }, []);
 
   const clearVaultAuthError = useCallback(() => setVaultAuthError(null), []);
@@ -212,10 +196,8 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
         isVaultConnected,
         connectionOffline,
         connectionMessage,
-        signingIn,
         vaultAuthError,
-        signInWithGoogle,
-        signOutFirebase,
+        ensureVaultProfile,
         clearVaultAuthError,
       }}
     >

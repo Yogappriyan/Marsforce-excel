@@ -4,7 +4,6 @@ import {
   CopyCheck,
   Download,
   FolderTree,
-  LogOut,
   MapPin,
   Menu,
   Moon,
@@ -44,7 +43,7 @@ export function AppShell({
   onGlobalSearchSubmit,
   children,
 }: AppShellProps) {
-  const { user, hasPermission, logout } = useAuth();
+  const { user, hasPermission } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -180,21 +179,13 @@ export function AppShell({
           )}
         </nav>
 
-        <div className="p-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
+        <div className="p-4 border-t border-slate-200 dark:border-slate-800">
           <div className="text-xs">
-            <div className="font-semibold text-slate-900 dark:text-white truncate">{user?.fullName}</div>
+            <div className="font-semibold text-slate-900 dark:text-white truncate">{user.fullName}</div>
             <div className="text-slate-500 dark:text-slate-400 truncate mt-0.5">
-              {user?.role.replace('_', ' ')} · {user?.email}
+              Direct Workspace Access
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => void logout()}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-            Sign out
-          </button>
         </div>
       </aside>
 
@@ -243,15 +234,8 @@ export function AppShell({
                   </button>
                 ))}
             </nav>
-            <div className="p-4 border-t border-slate-200 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={() => void logout()}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                Sign out
-              </button>
+            <div className="p-4 border-t border-slate-200 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400">
+              Direct Workspace Access
             </div>
           </aside>
         </div>

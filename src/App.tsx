@@ -1,11 +1,10 @@
 import { useState } from 'react';
 import { AppShell, type NavSection } from './components/AppShell.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
-import { AuthProvider, useAuth } from './contexts/AuthContext.tsx';
+import { AuthProvider } from './contexts/AuthContext.tsx';
 import { FirebaseProvider } from './contexts/FirebaseContext.tsx';
 import { ThemeProvider } from './contexts/ThemeContext.tsx';
 import { AdminView } from './features/admin/AdminView.tsx';
-import { LoginView } from './features/auth/LoginView.tsx';
 import { CategoriesView } from './features/categories/CategoriesView.tsx';
 import { DuplicatesView } from './features/duplicates/DuplicatesView.tsx';
 import { ExportsView } from './features/exports/ExportsView.tsx';
@@ -15,29 +14,11 @@ import { UploadWorkspace } from './features/uploads/UploadWorkspace.tsx';
 import { VercelTelemetry } from './components/VercelTelemetry.tsx';
 
 function MarsforceContent() {
-  const { user, loading } = useAuth();
   const [section, setSection] = useState<NavSection>('upload');
   const [activeUploadId, setActiveUploadId] = useState<string | undefined>(undefined);
   const [categoryFilter, setCategoryFilter] = useState<{ type?: string; value: string } | null>(null);
   const [geoFilter, setGeoFilter] = useState<{ area?: string; streetGroup?: string } | null>(null);
   const [globalSearch, setGlobalSearch] = useState('');
-
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 text-sm text-slate-500">
-        Initializing MARSFORCE workspace...
-      </div>
-    );
-  }
-
-  if (!user) {
-    return (
-      <>
-        <LoginView />
-        <VercelTelemetry route="/login" />
-      </>
-    );
-  }
 
   return (
     <>

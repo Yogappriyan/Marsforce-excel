@@ -1,58 +1,11 @@
-import React, { useState } from 'react';
-import { Eye, EyeOff, Lock, ShieldCheck } from 'lucide-react';
-import { apiRequest, ApiError, setClientAuthTokens } from '../../api/client.ts';
+import { ShieldCheck } from 'lucide-react';
 import { MarsforceLogo } from '../../components/MarsforceLogo.tsx';
 import { useAuth } from '../../contexts/AuthContext.tsx';
 import { useTheme } from '../../contexts/ThemeContext.tsx';
-import type { AuthUser } from '../../types/api.ts';
-
-interface AuthResponse {
-  user: AuthUser;
-  accessToken?: string;
-  refreshToken?: string;
-}
 
 export function LoginView() {
-  const { needsInitialSetup, vercelEphemeralWarning, setUserDirect } = useAuth();
+  const { authenticating, authError, authorizedPrimaryEmail, loginWithGoogle } = useAuth();
   const { theme, toggleTheme } = useTheme();
-
-  const [email, setEmail] = useState('');
-  const [fullName, setFullName] = useState('');
-  const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setSubmitting(true);
-    try {
-      if (needsInitialSetup) {
-        const res = await apiRequest<AuthResponse>('/api/v1/auth/setup', {
-          method: 'POST',
-          body: JSON.stringify({ email, fullName, password }),
-        });
-        setClientAuthTokens(res.accessToken, res.refreshToken);
-        setUserDirect(res.user);
-      } else {
-        const res = await apiRequest<AuthResponse>('/api/v1/auth/login', {
-          method: 'POST',
-          body: JSON.stringify({ email, password }),
-        });
-        setClientAuthTokens(res.accessToken, res.refreshToken);
-        setUserDirect(res.user);
-      }
-    } catch (err) {
-      if (err instanceof ApiError) {
-        setError(err.message);
-      } else {
-        setError('Unable to reach server. Please try again.');
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  };
 
   return (
     <div className="min-h-screen flex flex-col justify-between bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 px-6 py-8">
@@ -71,127 +24,77 @@ export function LoginView() {
         <button
           type="button"
           onClick={toggleTheme}
-          className="px-3 py-1.5 text-xs font-medium rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap"
+          className="px-3 py-1.5 text-xs font-medium rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer"
         >
           {theme === 'light' ? 'Dark mode' : 'Light mode'}
         </button>
       </div>
 
-      <main className="max-w-md w-full mx-auto my-12 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-8">
-        <div className="flex items-center gap-2.5 mb-2 text-blue-600 dark:text-blue-400">
-          {needsInitialSetup ? <ShieldCheck className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
-          <span className="text-xs font-semibold tracking-wide">
-            {needsInitialSetup ? 'Initial Workspace Setup' : 'Workspace Sign In'}
-          </span>
+      <main className="max-w-md w-full mx-auto my-12 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-8 space-y-6">
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400">
+            <ShieldCheck className="w-5 h-5" />
+            <span className="text-xs font-semibold tracking-wide">
+              Google Authorized Access
+            </span>
+          </div>
+
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
+            MARSFORCE Workspace
+          </h1>
+          <p className="text-sm text-slate-600 dark:text-slate-400">
+            Access is restricted to authorized Google accounts. Continue with{' '}
+            <span className="font-semibold text-slate-900 dark:text-white">{authorizedPrimaryEmail}</span>{' '}
+            to open the Excel management workspace.
+          </p>
         </div>
 
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white mb-2">
-          {needsInitialSetup ? 'Create Super Admin Account' : 'Sign in to MARSFORCE'}
-        </h1>
-        <p className="text-sm text-slate-600 dark:text-slate-400 mb-6">
-          {needsInitialSetup
-            ? 'No administrator exists yet. Create the primary Super Admin account to initialize this workspace.'
-            : 'Enter your corporate credentials to access the data structuring pipeline.'}
-        </p>
-
-        {vercelEphemeralWarning && (
-          <div className="mb-5 p-3 rounded-lg border border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/30 text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
-            Vercel serverless mode needs <code className="font-semibold">DATABASE_URL</code> (or <code className="font-semibold">POSTGRES_URL</code>) and <code className="font-semibold">SESSION_SECRET</code> in Vercel Project Environment Variables so sessions persist across serverless instances.
-          </div>
-        )}
-
-        {error && (
+        {authError && (
           <div
             role="alert"
-            className="mb-5 p-3 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/40 text-sm text-red-700 dark:text-red-300"
+            className="p-3 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/40 text-sm text-red-700 dark:text-red-300 leading-relaxed"
           >
-            {error}
+            {authError}
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {needsInitialSetup && (
-            <div>
-              <label htmlFor="fullName" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                Full name
-              </label>
-              <input
-                id="fullName"
-                type="text"
-                required
-                minLength={2}
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-                placeholder="Priya Ramanathan"
-                className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-600"
-              />
-            </div>
-          )}
-
-          <div>
-            <label htmlFor="email" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-              Work email
-            </label>
-            <input
-              id="email"
-              type="email"
-              required
-              autoComplete="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="name@company.com"
-              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-600"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="password" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-              Password
-            </label>
-            <div className="relative">
-              <input
-                id="password"
-                type={showPassword ? 'text' : 'password'}
-                required
-                autoComplete={needsInitialSetup ? 'new-password' : 'current-password'}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••••••"
-                className="w-full px-3.5 py-2.5 pr-10 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-600"
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword((v) => !v)}
-                aria-label={showPassword ? 'Hide password' : 'Show password'}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
-              >
-                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
-            </div>
-            {needsInitialSetup && (
-              <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
-                Minimum 6 characters.
-              </p>
-            )}
-          </div>
-
+        <div className="space-y-3">
           <button
-            type="submit"
-            disabled={submitting}
-            className="w-full py-2.5 px-4 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-60 rounded-lg transition-colors cursor-pointer"
+            type="button"
+            disabled={authenticating}
+            onClick={() => void loginWithGoogle()}
+            className="w-full py-3 px-4 text-sm font-semibold rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-60 transition-colors flex items-center justify-center gap-3 cursor-pointer"
           >
-            {submitting
-              ? 'Authenticating...'
-              : needsInitialSetup
-                ? 'Initialize Workspace'
-                : 'Sign In'}
+            <svg viewBox="0 0 24 24" className="w-5 h-5 shrink-0" aria-hidden="true">
+              <path
+                fill="#4285F4"
+                d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"
+              />
+              <path
+                fill="#34A853"
+                d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z"
+              />
+              <path
+                fill="#FBBC05"
+                d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z"
+              />
+              <path
+                fill="#EA4335"
+                d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"
+              />
+            </svg>
+            <span>{authenticating ? 'Verifying Google account...' : 'Continue with Google'}</span>
           </button>
-        </form>
+
+          <p className="text-center text-xs text-slate-500 dark:text-slate-400">
+            Authorized administrator: <span className="font-medium text-slate-700 dark:text-slate-300">{authorizedPrimaryEmail}</span>
+          </p>
+        </div>
       </main>
 
       <footer className="max-w-5xl w-full mx-auto text-xs text-slate-500 dark:text-slate-400 flex items-center justify-between">
         <span>MARSFORCE — Excel Management</span>
-        <span>Persistent sign-in · Role-based access</span>
+        <span>Google OAuth · Role-based access</span>
       </footer>
     </div>
   );

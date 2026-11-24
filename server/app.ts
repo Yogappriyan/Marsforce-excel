@@ -27,6 +27,7 @@ export function createApiApp() {
       contentSecurityPolicy: false,
       frameguard: false,
       crossOriginEmbedderPolicy: false,
+      crossOriginResourcePolicy: false,
       crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
       xContentTypeOptions: true,
       referrerPolicy: { policy: 'strict-origin-when-cross-origin' },

@@ -12,7 +12,7 @@ import {
   type Timestamp,
 } from 'firebase/firestore';
 import { apiRequest } from '../api/client.ts';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase.ts';
+import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase.ts';
 import type { UploadDTO, UploadSheetDTO } from '../types/api.ts';
 
 export interface VaultUploadRecord {
@@ -141,7 +141,7 @@ export async function backupUploadToFirestore(
   checksumVerified: boolean;
 }> {
   if (!ownerUid) {
-    throw new Error('Sign in with Google Backup first to sync uploads to Cloud Firestore.');
+    throw new Error('Google authorization is required to sync uploads to Cloud Firestore.');
   }
 
   const uploadDocId = sanitizeDocId(uploadId);
@@ -303,6 +303,9 @@ export function subscribeToVaultUploads(
   onData: (uploads: VaultUploadRecord[]) => void,
   onError?: (error: Error) => void
 ): () => void {
+  if (!auth.currentUser || auth.currentUser.uid !== ownerUid) {
+    return () => {};
+  }
   const q = query(collection(db, 'uploads'), where('ownerUid', '==', ownerUid));
   return onSnapshot(
     q,
@@ -319,6 +322,9 @@ export function subscribeToVaultUploads(
       onData(records);
     },
     (err) => {
+      if (!auth.currentUser || auth.currentUser.uid !== ownerUid) {
+        return;
+      }
       try {
         handleFirestoreError(err, OperationType.LIST, 'uploads');
       } catch (wrapped) {

@@ -1,96 +1,62 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import {
-  apiRequest,
-  ApiError,
-  clearClientAuthTokens,
-  registerUnauthorizedHandler,
-} from '../api/client.ts';
+import { apiRequest } from '../api/client.ts';
 import type { AuthUser, PermissionCode } from '../types/api.ts';
 
+const ALL_PERMISSIONS: PermissionCode[] = [
+  'view',
+  'upload',
+  'process',
+  'edit',
+  'approve',
+  'export',
+  'manage_users',
+  'manage_settings',
+  'delete',
+];
+
+const DEFAULT_WORKSPACE_USER: AuthUser = {
+  id: '00000000-0000-4000-8000-000000000001',
+  email: 'workspace@marsforce.local',
+  fullName: 'MARSFORCE Workspace',
+  role: 'SUPER_ADMIN',
+  isActive: true,
+  permissions: ALL_PERMISSIONS,
+};
+
 interface AuthContextValue {
-  user: AuthUser | null;
+  user: AuthUser;
   loading: boolean;
-  needsInitialSetup: boolean;
-  vercelEphemeralWarning: boolean;
   hasPermission: (perm: PermissionCode) => boolean;
-  refreshUser: () => Promise<void>;
-  logout: () => Promise<void>;
-  setUserDirect: (u: AuthUser | null) => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<AuthUser | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [needsInitialSetup, setNeedsInitialSetup] = useState(false);
-  const [vercelEphemeralWarning, setVercelEphemeralWarning] = useState(false);
-
-  const refreshUser = useCallback(async () => {
-    setLoading(true);
-    try {
-      const me = await apiRequest<{ user: AuthUser }>('/api/v1/auth/me');
-      setUser(me.user);
-      setNeedsInitialSetup(false);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        clearClientAuthTokens();
-        setUser(null);
-        try {
-          const status = await apiRequest<{ needsInitialSetup: boolean; vercelEphemeralWarning?: boolean }>(
-            '/api/v1/auth/status',
-            { skipAutoRefresh: true }
-          );
-          setNeedsInitialSetup(status.needsInitialSetup);
-          setVercelEphemeralWarning(Boolean(status.vercelEphemeralWarning));
-        } catch {
-          // Ignore status probe error
-        }
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const [user, setUser] = useState<AuthUser>(DEFAULT_WORKSPACE_USER);
 
   useEffect(() => {
-    registerUnauthorizedHandler(() => {
-      setUser(null);
-    });
-    void refreshUser();
-    return () => registerUnauthorizedHandler(null);
-  }, [refreshUser]);
-
-  const logout = useCallback(async () => {
-    try {
-      await apiRequest('/api/v1/auth/logout', { method: 'POST', skipAutoRefresh: true });
-    } catch {
-      // Clear local auth regardless
-    }
-    clearClientAuthTokens();
-    setUser(null);
+    void apiRequest<{ user?: AuthUser }>('/api/v1/auth/me', { skipAutoRefresh: true })
+      .then((res) => {
+        if (res?.user) {
+          setUser(res.user);
+        }
+      })
+      .catch(() => {
+        // Keep default open workspace operator if API is warming up
+      });
   }, []);
 
   const hasPermission = useCallback(
-    (perm: PermissionCode) => Boolean(user?.permissions?.includes(perm)),
+    (perm: PermissionCode) => Boolean(user.permissions?.includes(perm) ?? true),
     [user]
   );
-
-  const setUserDirect = useCallback((u: AuthUser | null) => {
-    setUser(u);
-    if (u) setNeedsInitialSetup(false);
-  }, []);
 
   return (
     <AuthContext.Provider
       value={{
         user,
-        loading,
-        needsInitialSetup,
-        vercelEphemeralWarning,
+        loading: false,
         hasPermission,
-        refreshUser,
-        logout,
-        setUserDirect,
       }}
     >
       {children}

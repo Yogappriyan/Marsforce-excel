@@ -10,7 +10,6 @@ import {
   CloudUpload,
   Download,
   FileSpreadsheet,
-  Lock,
   Play,
   RefreshCw,
   RotateCcw,
@@ -28,7 +27,7 @@ import {
   buildApiUrl,
   downloadAuthenticatedFile,
   generateAndDownloadExport,
-  getAuthHeaders,
+  getFreshAuthHeaders,
 } from '../../api/client.ts';
 import { useAuth } from '../../contexts/AuthContext.tsx';
 import { useFirebase } from '../../contexts/FirebaseContext.tsx';
@@ -87,10 +86,7 @@ export function UploadWorkspace({
     isVaultConnected,
     connectionOffline,
     connectionMessage,
-    signingIn: signingInVault,
     vaultAuthError,
-    signInWithGoogle,
-    signOutFirebase,
     clearVaultAuthError,
   } = useFirebase();
   const [uploads, setUploads] = useState<UploadDTO[]>([]);
@@ -322,7 +318,7 @@ export function UploadWorkspace({
       try {
         const res = await fetch(buildApiUrl(`/api/v1/jobs/${jobId}/stream`), {
           credentials: 'include',
-          headers: getAuthHeaders(),
+          headers: await getFreshAuthHeaders(),
           signal: controller.signal,
         });
         if (!res.ok || !res.body) {
@@ -1379,6 +1375,7 @@ export function UploadWorkspace({
       )}
 
       {/* Cloud Firestore Backup Vault (Zero-Data-Loss Protection) */}
+      {isVaultConnected && (
       <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
         <div className="px-5 py-3.5 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
@@ -1394,42 +1391,21 @@ export function UploadWorkspace({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {isVaultConnected ? (
-              <>
-                <span className="text-xs text-slate-600 dark:text-slate-300 flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900">
-                  <Cloud className="w-3.5 h-3.5 text-emerald-600" />
-                  {firebaseUser?.email}
-                </span>
-                {unbackedUploads.length > 0 && (
-                  <button
-                    type="button"
-                    disabled={syncingAllVault}
-                    onClick={() => void handleBackupAllToFirestore()}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white cursor-pointer disabled:opacity-50"
-                  >
-                    <CloudUpload className="w-3.5 h-3.5" />
-                    {syncingAllVault
-                      ? 'Syncing...'
-                      : `Back Up ${unbackedUploads.length} Local File${unbackedUploads.length === 1 ? '' : 's'}`}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => void signOutFirebase()}
-                  className="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
-                >
-                  Disconnect
-                </button>
-              </>
-            ) : (
+            <span className="text-xs text-slate-600 dark:text-slate-300 flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900">
+              <Cloud className="w-3.5 h-3.5 text-emerald-600" />
+              {firebaseUser?.email}
+            </span>
+            {unbackedUploads.length > 0 && (
               <button
                 type="button"
-                disabled={signingInVault}
-                onClick={() => void signInWithGoogle().catch(() => {})}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 hover:opacity-90 cursor-pointer disabled:opacity-50"
+                disabled={syncingAllVault}
+                onClick={() => void handleBackupAllToFirestore()}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white cursor-pointer disabled:opacity-50"
               >
-                <Lock className="w-3.5 h-3.5" />
-                {signingInVault ? 'Connecting...' : 'Connect Google Backup'}
+                <CloudUpload className="w-3.5 h-3.5" />
+                {syncingAllVault
+                  ? 'Syncing...'
+                  : `Back Up ${unbackedUploads.length} Local File${unbackedUploads.length === 1 ? '' : 's'}`}
               </button>
             )}
           </div>
@@ -1461,73 +1437,72 @@ export function UploadWorkspace({
           </div>
         )}
 
-        {isVaultConnected && (
-          <div className="p-4 space-y-3">
-            {vaultUploads.length === 0 ? (
-              <div className="text-xs text-slate-500 dark:text-slate-400">
-                No files backed up yet. Every new file you upload automatically saves here, or click &ldquo;Back Up&rdquo; on any local file below.
+        <div className="p-4 space-y-3">
+          {vaultUploads.length === 0 ? (
+            <div className="text-xs text-slate-500 dark:text-slate-400">
+              No files backed up yet. Every new file you upload automatically saves here, or click &ldquo;Back Up&rdquo; on any local file below.
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between text-xs text-slate-500">
+                <span className="tabular-nums">
+                  {visibleVaultUploads.length} backed-up workbook{visibleVaultUploads.length === 1 ? '' : 's'}
+                </span>
+                <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={showArchivedVault}
+                    onChange={(e) => setShowArchivedVault(e.target.checked)}
+                  />
+                  Show archived backups
+                </label>
               </div>
-            ) : (
-              <>
-                <div className="flex items-center justify-between text-xs text-slate-500">
-                  <span className="tabular-nums">
-                    {visibleVaultUploads.length} backed-up workbook{visibleVaultUploads.length === 1 ? '' : 's'}
-                  </span>
-                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={showArchivedVault}
-                      onChange={(e) => setShowArchivedVault(e.target.checked)}
-                    />
-                    Show archived backups
-                  </label>
-                </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {visibleVaultUploads.map((v) => (
-                    <div
-                      key={v.id}
-                      className="flex items-center justify-between gap-3 p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950"
-                    >
-                      <div className="min-w-0">
-                        <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                          {v.originalFilename}
-                          {v.isArchived ? ' (Archived)' : ''}
-                        </div>
-                        <div className="text-[11px] text-slate-500 dark:text-slate-400 tabular-nums mt-0.5">
-                          {v.totalRows.toLocaleString()} rows · {v.sheetCount} sheet{v.sheetCount === 1 ? '' : 's'} ·{' '}
-                          {v.chunkCount} chunks · SHA {v.fileSha256.slice(0, 8)}
-                        </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {visibleVaultUploads.map((v) => (
+                  <div
+                    key={v.id}
+                    className="flex items-center justify-between gap-3 p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                        {v.originalFilename}
+                        {v.isArchived ? ' (Archived)' : ''}
                       </div>
-
-                      <div className="flex items-center gap-2 shrink-0">
-                        {hasPermission('upload') && (
-                          <button
-                            type="button"
-                            disabled={restoringVaultId === v.id}
-                            onClick={() => void handleRestoreFromVault(v)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold rounded-md bg-blue-600 hover:bg-blue-700 text-white cursor-pointer disabled:opacity-50"
-                          >
-                            <RotateCcw className="w-3 h-3" />
-                            {restoringVaultId === v.id ? 'Restoring...' : 'Restore'}
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => void handleToggleArchiveVault(v)}
-                          className="px-2 py-1.5 text-[11px] font-medium rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
-                        >
-                          {v.isArchived ? 'Unarchive' : 'Archive'}
-                        </button>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400 tabular-nums mt-0.5">
+                        {v.totalRows.toLocaleString()} rows · {v.sheetCount} sheet{v.sheetCount === 1 ? '' : 's'} ·{' '}
+                        {v.chunkCount} chunks · SHA {v.fileSha256.slice(0, 8)}
                       </div>
                     </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        )}
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {hasPermission('upload') && (
+                        <button
+                          type="button"
+                          disabled={restoringVaultId === v.id}
+                          onClick={() => void handleRestoreFromVault(v)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold rounded-md bg-blue-600 hover:bg-blue-700 text-white cursor-pointer disabled:opacity-50"
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                          {restoringVaultId === v.id ? 'Restoring...' : 'Restore'}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => void handleToggleArchiveVault(v)}
+                        className="px-2 py-1.5 text-[11px] font-medium rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                      >
+                        {v.isArchived ? 'Unarchive' : 'Archive'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
       </section>
+      )}
 
       {recentlyDeletedUpload && (
         <div className="p-3.5 rounded-lg border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/40 text-xs text-amber-900 dark:text-amber-200 flex items-center justify-between gap-4">
@@ -1577,7 +1552,7 @@ export function UploadWorkspace({
                   <th className="py-2.5 px-4 font-semibold">Filename</th>
                   <th className="py-2.5 px-4 font-semibold text-right">Rows</th>
                   <th className="py-2.5 px-4 font-semibold">Status</th>
-                  <th className="py-2.5 px-4 font-semibold">Firestore Vault</th>
+                  {isVaultConnected && <th className="py-2.5 px-4 font-semibold">Firestore Vault</th>}
                   <th className="py-2.5 px-4 font-semibold">Date</th>
                   <th className="py-2.5 px-4 font-semibold text-right">Actions</th>
                 </tr>
@@ -1608,10 +1583,9 @@ export function UploadWorkspace({
                       </td>
                       <td className="py-2.5 px-4 text-right font-mono-tabular">{u.total_rows.toLocaleString()}</td>
                       <td className="py-2.5 px-4 text-slate-700 dark:text-slate-300">{u.status}</td>
+                      {isVaultConnected && (
                       <td className="py-2.5 px-4 whitespace-nowrap">
-                        {!isVaultConnected ? (
-                          <span className="text-slate-400">Not connected</span>
-                        ) : isBackedUp ? (
+                        {isBackedUp ? (
                           <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400 font-medium">
                             <Check className="w-3.5 h-3.5" />
                             Backed Up
@@ -1628,6 +1602,7 @@ export function UploadWorkspace({
                           </button>
                         )}
                       </td>
+                      )}
                       <td className="py-2.5 px-4 font-mono-tabular text-slate-500">
                         {new Date(u.created_at).toLocaleString()}
                       </td>

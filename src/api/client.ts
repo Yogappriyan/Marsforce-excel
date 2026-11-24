@@ -5,6 +5,13 @@ let memAccessToken: string | null = null;
 let memRefreshToken: string | null = null;
 let authGeneration = 0;
 let unauthorizedHandler: (() => void) | null = null;
+let bearerTokenProvider: ((forceRefresh?: boolean) => Promise<string | null>) | null = null;
+
+export function registerBearerTokenProvider(
+  provider: ((forceRefresh?: boolean) => Promise<string | null>) | null
+) {
+  bearerTokenProvider = provider;
+}
 
 export function setClientAuthTokens(accessToken?: string | null, refreshToken?: string | null) {
   if (accessToken !== undefined) {
@@ -37,6 +44,22 @@ export function getAuthHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+export async function resolveBearerHeaders(forceRefresh = false): Promise<Record<string, string>> {
+  if (bearerTokenProvider) {
+    try {
+      const idToken = await bearerTokenProvider(forceRefresh);
+      if (idToken) {
+        return { Authorization: `Bearer ${idToken}` };
+      }
+    } catch {
+      // Fallback to in-memory session token or HttpOnly cookie
+    }
+  }
+  return getAuthHeaders();
+}
+
+export const getFreshAuthHeaders = resolveBearerHeaders;
+
 export function registerUnauthorizedHandler(handler: (() => void) | null) {
   unauthorizedHandler = handler;
 }
@@ -58,6 +81,16 @@ type RefreshResult = 'ok' | 'unauthorized' | 'error';
 let refreshPromise: Promise<RefreshResult> | null = null;
 
 async function tryRefreshSession(): Promise<RefreshResult> {
+  if (bearerTokenProvider) {
+    try {
+      const refreshedToken = await bearerTokenProvider(true);
+      if (refreshedToken) {
+        return 'ok';
+      }
+    } catch {
+      // Fall through to cookie/refresh endpoint
+    }
+  }
   if (!refreshPromise) {
     const reqGeneration = authGeneration;
     const rt = getRefreshToken();
@@ -100,25 +133,24 @@ export async function apiRequest<T>(
   const { skipAutoRefresh, headers, ...rest } = options;
   const reqGeneration = authGeneration;
   const isFormData = rest.body instanceof FormData;
+  const authHeaders = await resolveBearerHeaders(false);
   const res = await fetch(`${API_BASE_URL}${path}`, {
     ...rest,
     credentials: 'include',
     headers: {
       ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
-      ...getAuthHeaders(),
+      ...authHeaders,
       ...(headers || {}),
     },
   });
 
   const isPublicAuthRoute =
-    path.includes('/auth/login') ||
-    path.includes('/auth/setup') ||
+    path.includes('/auth/google') ||
     path.includes('/auth/refresh') ||
     path.includes('/auth/status') ||
     path.includes('/auth/logout');
 
   if (res.status === 401 && !isPublicAuthRoute) {
-    // If the user re-authenticated while this request was in flight, retry with the fresh session
     if (reqGeneration !== authGeneration) {
       return apiRequest<T>(path, { ...options, skipAutoRefresh: true });
     }
@@ -159,19 +191,19 @@ export function buildApiUrl(path: string): string {
 
 export async function downloadAuthenticatedFile(path: string, fallbackFilename: string): Promise<void> {
   const reqGeneration = authGeneration;
-  const doFetch = () =>
+  const doFetch = async (forceRefresh = false) =>
     fetch(`${API_BASE_URL}${path}`, {
       credentials: 'include',
-      headers: getAuthHeaders(),
+      headers: await resolveBearerHeaders(forceRefresh),
     });
-  let res = await doFetch();
+  let res = await doFetch(false);
   if (res.status === 401) {
     if (reqGeneration !== authGeneration) {
-      res = await doFetch();
+      res = await doFetch(true);
     } else {
       const refreshResult = await tryRefreshSession();
       if (refreshResult === 'ok' || reqGeneration !== authGeneration) {
-        res = await doFetch();
+        res = await doFetch(true);
       } else if (res.status === 401 && refreshResult === 'unauthorized' && reqGeneration === authGeneration) {
         clearClientAuthTokens();
         unauthorizedHandler?.();
@@ -246,4 +278,3 @@ export async function generateAndDownloadExport(params: {
   await downloadAuthenticatedFile(`/api/v1/exports/${current.id}/download`, current.filename);
   return current;
 }
-
