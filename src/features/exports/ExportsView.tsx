@@ -29,7 +29,7 @@ export function ExportsView({ initialUploadId }: { initialUploadId?: string }) {
   const [uploads, setUploads] = useState<UploadDTO[]>([]);
   const [selectedUploadId, setSelectedUploadId] = useState<string>(initialUploadId || '');
   const didAutoSelectRef = useRef(Boolean(initialUploadId));
-  const [exportMode, setExportMode] = useState<ExportMode>('AREA_WISE');
+  const [exportMode, setExportMode] = useState<ExportMode>('ROUTE_XLSX');
   const [splitBy, setSplitBy] = useState<'NONE' | 'CITY' | 'DISTRICT' | 'STATE' | 'CATEGORY'>('CITY');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [areaFilter, setAreaFilter] = useState('');
@@ -163,14 +163,14 @@ export function ExportsView({ initialUploadId }: { initialUploadId?: string }) {
     exportsList.find(
       (ex) =>
         ex.status === 'COMPLETED' &&
-        (ex.export_mode === 'AREA_WISE' || ex.export_mode === 'COMBINED_ZIP') &&
+        (ex.export_mode === 'ROUTE_XLSX' || ex.export_mode === 'AREA_WISE' || ex.export_mode === 'COMBINED_ZIP') &&
         ex.artifact_manifest?.areaWorkbookCount !== undefined &&
         (!selectedUploadId || ex.filters?.uploadId === selectedUploadId)
     ) ||
     exportsList.find(
       (ex) =>
         ex.status === 'COMPLETED' &&
-        (ex.export_mode === 'AREA_WISE' || ex.export_mode === 'COMBINED_ZIP') &&
+        (ex.export_mode === 'ROUTE_XLSX' || ex.export_mode === 'AREA_WISE' || ex.export_mode === 'COMBINED_ZIP') &&
         ex.artifact_manifest?.areaWorkbookCount !== undefined
     );
   const latestManifest = latestCompletedBundle?.artifact_manifest || null;
@@ -204,9 +204,14 @@ export function ExportsView({ initialUploadId }: { initialUploadId?: string }) {
           className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-5"
         >
           {/* Mode Selector Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
             {(
               [
+                {
+                  id: 'ROUTE_XLSX',
+                  title: 'Route-Optimized All-in-One Excel',
+                  desc: 'Single .xlsx placing all Areas & Streets one below another by nearest proximity',
+                },
                 {
                   id: 'AREA_WISE',
                   title: 'Area-Wise Workbooks',
@@ -389,13 +394,15 @@ export function ExportsView({ initialUploadId }: { initialUploadId?: string }) {
               )}
               {downloadingKey === '__MAIN__'
                 ? 'Preparing & Downloading...'
-                : exportMode === 'AREA_WISE'
-                  ? areaFilter
-                    ? 'Download Area Excel'
-                    : 'Download All Areas (ZIP)'
-                  : exportMode === 'COMBINED_ZIP'
-                    ? 'Download Complete Audit ZIP'
-                    : 'Generate & Download'}
+                : exportMode === 'ROUTE_XLSX'
+                  ? 'Download Route-Optimized Excel (.xlsx)'
+                  : exportMode === 'AREA_WISE'
+                    ? areaFilter
+                      ? 'Download Area Excel'
+                      : 'Download All Areas (ZIP)'
+                    : exportMode === 'COMBINED_ZIP'
+                      ? 'Download Complete Audit ZIP'
+                      : 'Generate & Download'}
             </button>
           </div>
         </form>

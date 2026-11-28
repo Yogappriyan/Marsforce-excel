@@ -29,7 +29,7 @@ const EXPLICIT_SECTION_PREFIX_RE =
   /^(?:section|group|street\s*group|locality|street|road|area|zone|sub[\s-]?area)\s*[:\-]\s*(.+)/i;
 
 const GEO_HEADING_CUE_RE =
-  /(?:\b(?:street|st|road|rd|main\s*road|main\s*rd|cross|lane|avenue|ave|salai|nagar|colony|layout|extension|extn|enclave|gardens|puram|pudur|palayam|estate|phase|block|sector|village|bypass|ward|zone)\b|(?:தெரு|சாலை|நகர்|காலனி|புதூர்|பாளையம்|குறுக்கு))/i;
+  /(?:\b(?:street|st|road|rd|main\s*road|main\s*rd|cross|lane|avenue|ave|salai|nagar|colony|layout|extension|extn|enclave|gardens|puram|pudur|palayam|estate|phase|block|sector|village|bypass|ward|zone)\b|\b[a-z]{3,}(?:patti|patty|kudi|kudy|kkudi|kurichi|kurichy|mangalam|kovil|koil|pettai|halli)\b|(?:தெரு|சாலை|நகர்|காலனி|புதூர்|பாளையம்|குறுக்கு))/i;
 
 const PHONE_LIKE_RE = /(?:\+?91[\s-]?)?(?:0)?[6-9]\d{4}[\s-]?\d{5}|\b\d{8,14}\b/;
 

@@ -502,18 +502,18 @@ export function UploadWorkspace({
     }
   };
 
-  const handleQuickDownload = async (areaKey?: string) => {
+  const handleQuickDownload = async (areaKey?: string, mode: 'AREA_WISE' | 'ROUTE_XLSX' = 'AREA_WISE') => {
     if (!selectedUpload) return;
-    const key = areaKey || '__ALL_ZIP__';
+    const key = mode === 'ROUTE_XLSX' ? '__ROUTE_XLSX__' : areaKey || '__ALL_ZIP__';
     setDownloadingKey(key);
     setErrorMsg(null);
     setStatusMsg(null);
     try {
       const exp = await generateAndDownloadExport({
-        exportMode: 'AREA_WISE',
+        exportMode: mode,
         filters: {
           uploadId: selectedUpload.id,
-          ...(areaKey ? { area: areaKey } : {}),
+          ...(areaKey && mode === 'AREA_WISE' ? { area: areaKey } : {}),
         },
       });
       setStatusMsg(`Downloaded "${exp.filename}".`);
@@ -1024,26 +1024,39 @@ export function UploadWorkspace({
             <div className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-xl bg-[#0B2545] text-white">
                 <div>
-                  <div className="text-sm font-bold">Area Excel Downloads Ready</div>
+                  <div className="text-sm font-bold">Route-Optimized Excel &amp; Area Downloads Ready</div>
                   <div className="text-xs text-slate-300 mt-0.5 tabular-nums">
                     {loadingAreas
                       ? 'Loading areas...'
-                      : `${validAreas.length} Area workbook${validAreas.length === 1 ? '' : 's'} · ${(
+                      : `${validAreas.length} chained Area${validAreas.length === 1 ? '' : 's'} · ${(
                           areaSummary?.reconciliation.totalCustomerRecords ?? selectedUpload.total_rows
-                        ).toLocaleString()} customers structured`}
+                        ).toLocaleString()} customers ordered for field visits`}
                   </div>
                 </div>
 
-                {hasPermission('export') && validAreas.length > 0 && (
-                  <button
-                    type="button"
-                    disabled={downloadingKey !== null}
-                    onClick={() => void handleQuickDownload()}
-                    className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer disabled:opacity-50 whitespace-nowrap"
-                  >
-                    <Archive className="w-4 h-4" />
-                    {downloadingKey === '__ALL_ZIP__' ? 'Preparing ZIP...' : 'Download All Areas (ZIP)'}
-                  </button>
+                {hasPermission('export') && (validAreas.length > 0 || unassignedArea) && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={downloadingKey !== null}
+                      onClick={() => void handleQuickDownload(undefined, 'ROUTE_XLSX')}
+                      className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                    >
+                      <FileSpreadsheet className="w-4 h-4" />
+                      {downloadingKey === '__ROUTE_XLSX__' ? 'Optimizing Route...' : 'Download Route Excel (.xlsx)'}
+                    </button>
+                    {validAreas.length > 0 && (
+                      <button
+                        type="button"
+                        disabled={downloadingKey !== null}
+                        onClick={() => void handleQuickDownload(undefined, 'AREA_WISE')}
+                        className="inline-flex items-center gap-2 px-3.5 py-2.5 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-white cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                      >
+                        <Archive className="w-4 h-4" />
+                        {downloadingKey === '__ALL_ZIP__' ? 'Preparing ZIP...' : 'All Areas (ZIP)'}
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
 
@@ -1070,9 +1083,10 @@ export function UploadWorkspace({
 
                   {filteredValidAreas.length > 0 && (
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {filteredValidAreas.map((area) => {
+                      {filteredValidAreas.map((area, aIdx) => {
                         const streetCount = area.streetGroups.filter((s) => s.streetGroup !== 'UNIDENTIFIED').length;
                         const isDownloadingThis = downloadingKey === area.areaKey;
+                        const stopNum = area.areaStopNumber ?? aIdx + 1;
                         return (
                           <div
                             key={area.areaKey}
@@ -1080,6 +1094,9 @@ export function UploadWorkspace({
                           >
                             <div className="min-w-0">
                               <div className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                                <span className="text-xs font-mono-tabular text-blue-600 dark:text-blue-400 mr-1.5">
+                                  #{stopNum}
+                                </span>
                                 {area.areaName}
                               </div>
                               <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums">

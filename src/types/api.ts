@@ -180,6 +180,8 @@ export interface GeoAreaItem {
   areaKey: string;
   areaName: string;
   isUnassigned: boolean;
+  areaStopNumber?: number | null;
+  transitionedFrom?: { areaName: string; placeName: string } | null;
   totalCount: number;
   unidentifiedCount: number;
   needsReviewCount: number;
@@ -291,7 +293,7 @@ export interface DuplicateGroupDTO {
   created_at: string;
 }
 
-export type ExportMode = 'AREA_WISE' | 'COMBINED_ZIP' | 'SINGLE_XLSX' | 'CSV';
+export type ExportMode = 'ROUTE_XLSX' | 'AREA_WISE' | 'COMBINED_ZIP' | 'SINGLE_XLSX' | 'CSV';
 
 export interface ExportDTO {
   id: string;

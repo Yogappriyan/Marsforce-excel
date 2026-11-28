@@ -357,6 +357,25 @@ export function parseCombinedAddressDeterministic(rawAddress: string | null): Ad
     }
     if (matchedStateSuffix) continue;
 
+    // Handle trailing city + zone like "Trichy-17", "Trichy - 18", "Thennur Trichy-17"
+    const cityZoneMatch = token.match(
+      /^(.*?)(?:[\s.,]+|^)(trichy|tiruchirappalli|madurai|chennai|coimbatore|salem|erode|thanjavur|vellore|tirunelveli|thoothukudi|nagercoil|bengaluru|bangalore|hyderabad|mumbai|pune)(?:\s*[-–]\s*(\d{1,3}))?\.?$/i
+    );
+    if (cityZoneMatch) {
+      const prefix = cityZoneMatch[1].replace(/[.,]+$/, '').trim();
+      const cityRaw = cityZoneMatch[2];
+      const cityLow = cityRaw.toLowerCase();
+      if (!city && KNOWN_CITIES[cityLow]) {
+        city = smartTitleCase(cityRaw);
+        district = KNOWN_CITIES[cityLow].district;
+        if (!state) state = KNOWN_CITIES[cityLow].state;
+      }
+      if (prefix) {
+        remainingTokens.push(prefix);
+      }
+      continue;
+    }
+
     if (!city && KNOWN_CITIES[low]) {
       city = smartTitleCase(token);
       district = KNOWN_CITIES[low].district;
@@ -366,7 +385,7 @@ export function parseCombinedAddressDeterministic(rawAddress: string | null): Ad
     remainingTokens.push(token);
   }
 
-  // If city still missing, check last remaining token against known cities or treat last token as city if >= 2 tokens
+  // If city still missing, check last remaining token against known cities
   if (!city && remainingTokens.length >= 2) {
     const candidate = remainingTokens[remainingTokens.length - 1];
     const low = candidate.toLowerCase();
@@ -375,7 +394,7 @@ export function parseCombinedAddressDeterministic(rawAddress: string | null): Ad
       district = KNOWN_CITIES[low].district;
       if (!state) state = KNOWN_CITIES[low].state;
       remainingTokens.pop();
-    } else if (!/\d/.test(candidate) && candidate.length <= 28) {
+    } else if (!/\d/.test(candidate) && candidate.length <= 28 && !/(nagar|colony|patti|kudi|kurichi|mangalam|kovil|koil|puram|street|road|cross)/i.test(low)) {
       city = smartTitleCase(remainingTokens.pop()!);
     }
   }

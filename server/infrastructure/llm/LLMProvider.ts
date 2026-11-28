@@ -91,6 +91,26 @@ export const GeoClassifyBatchSchema = z.object({
   items: z.array(GeoClassifyItemSchema),
 });
 
+export const GeoRouteOrderSchema = z.object({
+  orderedKeys: z.array(z.string()),
+});
+
+export interface GeoRoutePlaceInput {
+  key: string;
+  label: string;
+  pins: string[];
+  zones: string[];
+  contextHints: string[];
+}
+
+export interface GeoRouteAreaInput {
+  key: string;
+  label: string;
+  pins: string[];
+  zones: string[];
+  sampleLocalities: string[];
+}
+
 export type ColumnDetectionResult = z.infer<typeof ColumnDetectionResultSchema>;
 export type AddressSplitItem = z.infer<typeof AddressSplitItemSchema>;
 export type CategoryBatchItem = z.infer<typeof CategoryBatchItemSchema>;
@@ -107,6 +127,14 @@ export interface LLMProvider {
   extractAddressesBatch(uniqueAddresses: string[]): Promise<Map<string, AddressSplitItem>>;
   classifyAmbiguousAddressesBatch(uniquePayloads: string[]): Promise<Map<string, GeoClassifyItem>>;
   classifyCategoriesBatch(uniqueDescriptions: string[]): Promise<Map<string, CategoryBatchItem>>;
+  orderLocalitiesByProximityBatch(
+    areaName: string,
+    places: GeoRoutePlaceInput[]
+  ): Promise<string[] | null>;
+  orderAreasByRouteProximity(
+    regionHint: string,
+    areas: GeoRouteAreaInput[]
+  ): Promise<string[] | null>;
   testConnection(): Promise<{ ok: boolean; provider: string; model: string; message: string }>;
 }
 
@@ -596,6 +624,134 @@ class GeminiLLMProvider implements LLMProvider {
     return result;
   }
 
+  async orderLocalitiesByProximityBatch(
+    areaName: string,
+    places: GeoRoutePlaceInput[]
+  ): Promise<string[] | null> {
+    if (!this.isConfigured() || places.length < 3 || places.length > 80) return null;
+
+    const sortedSignature = places
+      .map((p) => `${p.key}:${p.label}:${p.pins.join(',')}:${p.zones.join(',')}`)
+      .sort()
+      .join('|');
+    const cacheInput = `${areaName.trim().toLowerCase()}::${sortedSignature}`;
+    const { hits, misses } = await readCacheBatch(
+      'GEO_ROUTE_ORDER',
+      this.providerName,
+      [cacheInput],
+      GeoRouteOrderSchema
+    );
+    const cached = hits.get(cacheInput);
+    if (cached && cached.orderedKeys.length > 0) {
+      return cached.orderedKeys;
+    }
+    if (misses.length === 0 || getGeminiHealthWarning()) return null;
+
+    try {
+      const ai = this.getClient();
+      const response = await this.runWithRetry(() =>
+        ai.models.generateContent({
+          model: this.model,
+          contents: JSON.stringify({
+            instruction:
+              'Order all these streets, cross streets, sub-areas, and localities inside the Area as a continuous real-world travelling salesman / nearest-neighbor field visit route. Optimize for actual geographical location, road connectivity, shortest driving distance, and accessibility so a field employee moves smoothly from one street to the nearest adjacent street without backtracking. Never sort alphabetically or randomly. Return EVERY input key exactly once in orderedKeys.',
+            areaName,
+            places,
+          }),
+          config: {
+            systemInstruction:
+              'You are an expert geographical route-optimization planner for field staff. Sequence the provided street/locality keys by true geographical proximity, road connectivity, postal codes, and city zone continuity. Return every input key once.',
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                orderedKeys: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+              },
+            },
+          },
+        })
+      );
+      const parsed = JSON.parse((response.text ?? '{}').trim());
+      const validated = GeoRouteOrderSchema.safeParse(parsed);
+      if (validated.success && validated.data.orderedKeys.length > 0) {
+        await writeCacheBatch('GEO_ROUTE_ORDER', this.providerName, [
+          { input: cacheInput, value: validated.data },
+        ]);
+        return validated.data.orderedKeys;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  async orderAreasByRouteProximity(
+    regionHint: string,
+    areas: GeoRouteAreaInput[]
+  ): Promise<string[] | null> {
+    if (!this.isConfigured() || areas.length < 3 || areas.length > 60) return null;
+
+    const sortedSignature = areas
+      .map((a) => `${a.key}:${a.label}:${a.pins.join(',')}:${a.zones.join(',')}`)
+      .sort()
+      .join('|');
+    const cacheInput = `${regionHint.trim().toLowerCase()}::${sortedSignature}`;
+    const { hits, misses } = await readCacheBatch(
+      'GEO_AREA_ROUTE_ORDER',
+      this.providerName,
+      [cacheInput],
+      GeoRouteOrderSchema
+    );
+    const cached = hits.get(cacheInput);
+    if (cached && cached.orderedKeys.length > 0) {
+      return cached.orderedKeys;
+    }
+    if (misses.length === 0 || getGeminiHealthWarning()) return null;
+
+    try {
+      const ai = this.getClient();
+      const response = await this.runWithRetry(() =>
+        ai.models.generateContent({
+          model: this.model,
+          contents: JSON.stringify({
+            instruction:
+              'Sequence these service Areas as a continuous field-staff travel route across the city/district. After finishing all streets in one Area, the field employee should move directly to the geographically nearest neighbouring Area via connected arterial roads, postal zones, and localities to minimize fuel, distance, and backtracking. Never order alphabetically or randomly. Return EVERY input area key exactly once in orderedKeys.',
+            regionHint,
+            areas,
+          }),
+          config: {
+            systemInstruction:
+              'You are a geographic logistics route optimizer. Order the Areas in an efficient contiguous path based on real-world geographical adjacency, road connectivity, PIN codes, and locality corridors. Return every provided key once.',
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                orderedKeys: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+              },
+            },
+          },
+        })
+      );
+      const parsed = JSON.parse((response.text ?? '{}').trim());
+      const validated = GeoRouteOrderSchema.safeParse(parsed);
+      if (validated.success && validated.data.orderedKeys.length > 0) {
+        await writeCacheBatch('GEO_AREA_ROUTE_ORDER', this.providerName, [
+          { input: cacheInput, value: validated.data },
+        ]);
+        return validated.data.orderedKeys;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   async testConnection() {
     if (!this.isConfigured()) {
       return {
@@ -796,6 +952,88 @@ class ClaudeLLMProvider implements LLMProvider {
     return result;
   }
 
+  async orderLocalitiesByProximityBatch(
+    areaName: string,
+    places: GeoRoutePlaceInput[]
+  ): Promise<string[] | null> {
+    if (!this.isConfigured() || places.length < 3 || places.length > 80) return null;
+
+    const sortedSignature = places
+      .map((p) => `${p.key}:${p.label}:${p.pins.join(',')}:${p.zones.join(',')}`)
+      .sort()
+      .join('|');
+    const cacheInput = `${areaName.trim().toLowerCase()}::${sortedSignature}`;
+    const { hits, misses } = await readCacheBatch(
+      'GEO_ROUTE_ORDER',
+      this.providerName,
+      [cacheInput],
+      GeoRouteOrderSchema
+    );
+    const cached = hits.get(cacheInput);
+    if (cached && cached.orderedKeys.length > 0) {
+      return cached.orderedKeys;
+    }
+    if (misses.length === 0) return null;
+
+    try {
+      const raw = await this.callAnthropic(
+        'Return strictly JSON: { "orderedKeys": string[] }. Order the input street/locality keys by true geographical proximity, road connectivity, and shortest travel distance without backtracking. Never sort alphabetically. Return every key once.',
+        { areaName, places }
+      );
+      const parsed = GeoRouteOrderSchema.safeParse(raw);
+      if (parsed.success && parsed.data.orderedKeys.length > 0) {
+        await writeCacheBatch('GEO_ROUTE_ORDER', this.providerName, [
+          { input: cacheInput, value: parsed.data },
+        ]);
+        return parsed.data.orderedKeys;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  async orderAreasByRouteProximity(
+    regionHint: string,
+    areas: GeoRouteAreaInput[]
+  ): Promise<string[] | null> {
+    if (!this.isConfigured() || areas.length < 3 || areas.length > 60) return null;
+
+    const sortedSignature = areas
+      .map((a) => `${a.key}:${a.label}:${a.pins.join(',')}:${a.zones.join(',')}`)
+      .sort()
+      .join('|');
+    const cacheInput = `${regionHint.trim().toLowerCase()}::${sortedSignature}`;
+    const { hits, misses } = await readCacheBatch(
+      'GEO_AREA_ROUTE_ORDER',
+      this.providerName,
+      [cacheInput],
+      GeoRouteOrderSchema
+    );
+    const cached = hits.get(cacheInput);
+    if (cached && cached.orderedKeys.length > 0) {
+      return cached.orderedKeys;
+    }
+    if (misses.length === 0) return null;
+
+    try {
+      const raw = await this.callAnthropic(
+        'Return strictly JSON: { "orderedKeys": string[] }. Order the input Areas as a continuous field-staff travel route connecting nearby Areas via road connectivity and postal proximity. Never sort alphabetically. Return every key once.',
+        { regionHint, areas }
+      );
+      const parsed = GeoRouteOrderSchema.safeParse(raw);
+      if (parsed.success && parsed.data.orderedKeys.length > 0) {
+        await writeCacheBatch('GEO_AREA_ROUTE_ORDER', this.providerName, [
+          { input: cacheInput, value: parsed.data },
+        ]);
+        return parsed.data.orderedKeys;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   async testConnection() {
     if (!this.isConfigured()) {
       return {
@@ -843,6 +1081,12 @@ class DisabledLLMProvider implements LLMProvider {
   }
   async classifyCategoriesBatch() {
     return new Map<string, CategoryBatchItem>();
+  }
+  async orderLocalitiesByProximityBatch() {
+    return null;
+  }
+  async orderAreasByRouteProximity() {
+    return null;
   }
   async testConnection() {
     return {

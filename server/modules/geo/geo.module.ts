@@ -12,10 +12,11 @@ import {
 import { emitAuditLog } from '../audit/audit.module.ts';
 import { cleanText } from '../processing/cleaning.engine.ts';
 import {
+  buildChainedAreaAndPlaceRoute,
   canonicalizeGeoLabel,
   inferGroupType,
-  naturalGeoCompare,
   normalizeGeoGroupKey,
+  type ProximityRecordSignals,
 } from '../processing/geoIntelligence.engine.ts';
 
 const ManualGeoPatchSchema = z.object({
@@ -154,6 +155,12 @@ export function createGeoRouter() {
         confirmed_count: string;
         precision_loss_count: string;
         section_headings: string[];
+        min_row_num: number;
+        sample_pins: string[];
+        sample_sub_areas: string[];
+        sample_streets: string[];
+        sample_cities: string[];
+        sample_raw_rows: Array<Record<string, string>>;
       }>(
         `SELECT
            cr.area AS area_name,
@@ -168,13 +175,57 @@ export function createGeoRouter() {
            COALESCE(
              array_agg(DISTINCT cr.section_heading_context) FILTER (WHERE cr.section_heading_context IS NOT NULL),
              ARRAY[]::text[]
-           ) AS section_headings
+           ) AS section_headings,
+           COALESCE(MIN(COALESCE(cr.original_row_number, rr.row_number)), 0)::int AS min_row_num,
+           COALESCE(
+             (array_agg(DISTINCT cr.pin_code) FILTER (WHERE cr.pin_code IS NOT NULL))[1:10],
+             ARRAY[]::text[]
+           ) AS sample_pins,
+           COALESCE(
+             (array_agg(DISTINCT cr.sub_area) FILTER (WHERE cr.sub_area IS NOT NULL))[1:10],
+             ARRAY[]::text[]
+           ) AS sample_sub_areas,
+           COALESCE(
+             (array_agg(DISTINCT cr.street) FILTER (WHERE cr.street IS NOT NULL))[1:10],
+             ARRAY[]::text[]
+           ) AS sample_streets,
+           COALESCE(
+             (array_agg(DISTINCT cr.city) FILTER (WHERE cr.city IS NOT NULL))[1:6],
+             ARRAY[]::text[]
+           ) AS sample_cities,
+           COALESCE(
+             (array_agg(rr.raw_data ORDER BY COALESCE(cr.original_row_number, rr.row_number) ASC))[1:12],
+             ARRAY[]::jsonb[]
+           ) AS sample_raw_rows
          FROM clean_records cr
+         LEFT JOIN raw_records rr ON rr.id = cr.raw_record_id
          WHERE cr.upload_id = $1 AND cr.deleted_at IS NULL AND cr.is_merged = false
          GROUP BY cr.area, COALESCE(NULLIF(cr.street_group, ''), 'UNIDENTIFIED'), COALESCE(NULLIF(cr.group_type, ''), 'UNIDENTIFIED')
          ORDER BY cr.area ASC NULLS LAST, COUNT(*) DESC, street_group ASC`,
         [uploadId]
       );
+
+      const buildSignalsFromSample = (g: (typeof groupRows.rows)[number]): ProximityRecordSignals[] => {
+        const rawList = Array.isArray(g.sample_raw_rows) ? g.sample_raw_rows : [];
+        const pins = Array.isArray(g.sample_pins) ? g.sample_pins : [];
+        const subAreas = Array.isArray(g.sample_sub_areas) ? g.sample_sub_areas : [];
+        const streets = Array.isArray(g.sample_streets) ? g.sample_streets : [];
+        const cities = Array.isArray(g.sample_cities) ? g.sample_cities : [];
+        const maxLen = Math.max(1, rawList.length, pins.length, subAreas.length, streets.length);
+        const signals: ProximityRecordSignals[] = [];
+        for (let i = 0; i < maxLen; i++) {
+          signals.push({
+            pin_code: pins[i] || pins[0] || null,
+            sub_area: subAreas[i] || subAreas[0] || null,
+            street: streets[i] || streets[0] || null,
+            city: cities[i] || cities[0] || null,
+            area: g.area_name,
+            original_row_number: g.min_row_num || 1,
+            raw_data: rawList[i] || null,
+          });
+        }
+        return signals;
+      };
 
       const areaMap = new Map<
         string,
@@ -188,6 +239,7 @@ export function createGeoRouter() {
           conflictCount: number;
           confirmedCount: number;
           precisionLossCount: number;
+          signals: ProximityRecordSignals[];
           streetMap: Map<
             string,
             {
@@ -198,6 +250,7 @@ export function createGeoRouter() {
               conflictCount: number;
               confirmedCount: number;
               sectionHeadings: Set<string>;
+              signals: ProximityRecordSignals[];
             }
           >;
         }
@@ -219,6 +272,7 @@ export function createGeoRouter() {
         const unid = Number(g.unidentified_count);
         const conf = Number(g.confirmed_count);
         const prec = Number(g.precision_loss_count);
+        const rowSignals = buildSignalsFromSample(g);
 
         totalCustomerRecords += cnt;
         if (isUnassigned) unassignedAreaCount += cnt;
@@ -238,6 +292,7 @@ export function createGeoRouter() {
             conflictCount: 0,
             confirmedCount: 0,
             precisionLossCount: 0,
+            signals: [],
             streetMap: new Map(),
           };
           areaMap.set(areaKey, entry);
@@ -249,6 +304,7 @@ export function createGeoRouter() {
         entry.conflictCount += cf;
         entry.confirmedCount += conf;
         entry.precisionLossCount += prec;
+        if (entry.signals.length < 40) entry.signals.push(...rowSignals.slice(0, 6));
 
         const sgLabel = g.street_group || 'UNIDENTIFIED';
         const sgKey = sgLabel === 'UNIDENTIFIED' ? '__UNIDENTIFIED__' : normalizeGeoGroupKey(sgLabel);
@@ -262,6 +318,7 @@ export function createGeoRouter() {
             conflictCount: 0,
             confirmedCount: 0,
             sectionHeadings: new Set(),
+            signals: [],
           };
           entry.streetMap.set(sgKey, sgEntry);
         }
@@ -269,6 +326,7 @@ export function createGeoRouter() {
         sgEntry.reviewRequiredCount += nr;
         sgEntry.conflictCount += cf;
         sgEntry.confirmedCount += conf;
+        sgEntry.signals.push(...rowSignals);
         if (Array.isArray(g.section_headings)) {
           for (const h of g.section_headings) {
             if (h) sgEntry.sectionHeadings.add(h);
@@ -285,37 +343,63 @@ export function createGeoRouter() {
         [uploadId]
       );
 
-      const areas = Array.from(areaMap.values())
-        .map((entry) => ({
-          areaKey: entry.areaKey,
-          areaName: entry.areaName,
+      const areaList = Array.from(areaMap.entries());
+      const areaByNormKey = new Map(areaList);
+      const chainedAreas = buildChainedAreaAndPlaceRoute(
+        areaList.map(([normKey, entry]) => ({
+          key: normKey,
+          displayName: entry.areaName,
           isUnassigned: entry.isUnassigned,
-          totalCount: entry.totalCount,
-          unidentifiedCount: entry.unidentifiedCount,
-          needsReviewCount: entry.needsReviewCount,
-          conflictCount: entry.conflictCount,
-          confirmedCount: entry.confirmedCount,
-          precisionLossCount: entry.precisionLossCount,
-          streetGroups: Array.from(entry.streetMap.values())
-            .map((sg) => ({
-              streetGroup: sg.streetGroup,
-              groupType: sg.groupType,
-              count: sg.count,
-              reviewRequiredCount: sg.reviewRequiredCount,
-              conflictCount: sg.conflictCount,
-              confirmedCount: sg.confirmedCount,
-              sectionHeadings: Array.from(sg.sectionHeadings),
-            }))
-            .sort((a, b) => {
-              if (a.streetGroup === 'UNIDENTIFIED' && b.streetGroup !== 'UNIDENTIFIED') return 1;
-              if (b.streetGroup === 'UNIDENTIFIED' && a.streetGroup !== 'UNIDENTIFIED') return -1;
-              return naturalGeoCompare(a.streetGroup, b.streetGroup);
-            }),
-        }))
-        .sort((a, b) => {
-          if (a.isUnassigned !== b.isUnassigned) return a.isUnassigned ? 1 : -1;
-          return naturalGeoCompare(a.areaName, b.areaName);
-        });
+          rows: entry.signals,
+          places: Array.from(entry.streetMap.entries()).map(([sgNormKey, sg]) => ({
+            key: sgNormKey,
+            displayName: sg.streetGroup,
+            groupType: sg.groupType,
+            isUnidentified: sg.streetGroup === 'UNIDENTIFIED',
+            rows: sg.signals,
+          })),
+        })),
+        {
+          mergePlaceVariants: false,
+          sortRowsInsidePlace: false,
+        }
+      );
+
+      const areas = chainedAreas
+        .map((ag) => {
+          const entry = areaByNormKey.get(ag.key);
+          if (!entry) return null;
+
+          return {
+            areaKey: entry.areaKey,
+            areaName: entry.areaName,
+            isUnassigned: entry.isUnassigned,
+            areaStopNumber: ag.areaStopNumber,
+            transitionedFrom: ag.transitionedFrom,
+            totalCount: entry.totalCount,
+            unidentifiedCount: entry.unidentifiedCount,
+            needsReviewCount: entry.needsReviewCount,
+            conflictCount: entry.conflictCount,
+            confirmedCount: entry.confirmedCount,
+            precisionLossCount: entry.precisionLossCount,
+            streetGroups: ag.orderedPlaces
+              .map((pg) => {
+                const sg = entry.streetMap.get(pg.key);
+                if (!sg) return null;
+                return {
+                  streetGroup: sg.streetGroup,
+                  groupType: sg.groupType,
+                  count: sg.count,
+                  reviewRequiredCount: sg.reviewRequiredCount,
+                  conflictCount: sg.conflictCount,
+                  confirmedCount: sg.confirmedCount,
+                  sectionHeadings: Array.from(sg.sectionHeadings),
+                };
+              })
+              .filter((x): x is NonNullable<typeof x> => Boolean(x)),
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => Boolean(x));
 
       const distinctAreasCount = areas.filter((a) => !a.isUnassigned).length;
       const distinctStreetGroupsCount = areas.reduce(

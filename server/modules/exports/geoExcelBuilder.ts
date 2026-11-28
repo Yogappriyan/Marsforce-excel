@@ -1,9 +1,14 @@
 import AdmZip from 'adm-zip';
 import ExcelJS from 'exceljs';
 import {
+  buildChainedAreaAndPlaceRoute,
   canonicalizeGeoLabel,
-  naturalGeoCompare,
+  mergeVariantGeoGroups,
   normalizeGeoGroupKey,
+  orderGeoGroupsByProximity,
+  sortRecordsForFieldRoute,
+  type ChainedAreaInput,
+  type ChainedRoutedArea,
 } from '../processing/geoIntelligence.engine.ts';
 
 export function neutralizeExcelCell(val: unknown): string | number | null {
@@ -161,17 +166,17 @@ export interface AreaWorkbookStats {
 }
 
 const THIN_BORDER: Partial<ExcelJS.Borders> = {
-  top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-  left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-  bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-  right: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+  top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+  left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+  bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+  right: { style: 'thin', color: { argb: 'FFCBD5E1' } },
 };
 
-const LIGHT_BLUE_BORDER: Partial<ExcelJS.Borders> = {
-  top: { style: 'thin', color: { argb: 'FF93C5FD' } },
-  left: { style: 'thin', color: { argb: 'FF93C5FD' } },
-  bottom: { style: 'thin', color: { argb: 'FF93C5FD' } },
-  right: { style: 'thin', color: { argb: 'FF93C5FD' } },
+const SECTION_BANNER_BORDER: Partial<ExcelJS.Borders> = {
+  top: { style: 'thin', color: { argb: 'FF64748B' } },
+  left: { style: 'thin', color: { argb: 'FF64748B' } },
+  bottom: { style: 'thin', color: { argb: 'FF64748B' } },
+  right: { style: 'thin', color: { argb: 'FF64748B' } },
 };
 
 function buildOriginalAndDerivedHeaders(records: GeoExportRecord[], preferredOrder: string[] = []): string[] {
@@ -203,8 +208,23 @@ function isNeedsReviewRow(r: GeoExportRecord): boolean {
     r.status === 'NEEDS_REVIEW' ||
     r.status === 'INVALID' ||
     Boolean(r.precision_loss_detected) ||
-    Boolean(r.has_inferred_fields)
+    Boolean(r.has_inferred_fields) ||
+    !r.area ||
+    r.area.trim().toUpperCase() === 'UNASSIGNED'
   );
+}
+
+function getLocationFlag(r: GeoExportRecord): string {
+  const noArea = !r.area || !r.area.trim() || r.area.trim().toUpperCase() === 'UNASSIGNED';
+  const noStreetGroup = !r.street_group || !r.street_group.trim() || r.street_group.trim().toUpperCase() === 'UNIDENTIFIED';
+  if (noArea && noStreetGroup) return 'VERIFY: UNASSIGNED AREA & LOCATION';
+  if (noArea) return 'VERIFY: UNASSIGNED AREA';
+  if (noStreetGroup || r.geographic_review_status === 'UNIDENTIFIED') return 'VERIFY: UNIDENTIFIED LOCATION';
+  if (r.geographic_review_status === 'CONFLICT') return 'VERIFY: HEADING CONFLICT';
+  if (r.geographic_review_status === 'NEEDS_REVIEW' || r.precision_loss_detected || r.has_inferred_fields) {
+    return 'VERIFY: MANUAL REVIEW';
+  }
+  return 'OK';
 }
 
 function getDerivedCellVal(r: GeoExportRecord, key: string): string | number | null {
@@ -324,10 +344,139 @@ function writeMachineReadableRecordsSheet(
   }
 }
 
+function extractBestAddressDisplay(r: GeoExportRecord): string {
+  const raw = r.raw_data || {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (/(addr|address|location)/i.test(k) && v && String(v).trim()) {
+      return String(v).trim();
+    }
+  }
+  return [r.street, r.sub_area, r.area, r.city, r.pin_code].filter(Boolean).join(', ');
+}
+
+export function buildOrderedPlaceGroups(
+  records: GeoExportRecord[],
+  aiOrderedKeys?: string[] | null
+) {
+  const groupedByPlace = new Map<
+    string,
+    { key: string; displayName: string; groupType: string; isUnidentified: boolean; rows: GeoExportRecord[] }
+  >();
+
+  for (const r of records) {
+    const rawSg = (r.street_group || '').trim();
+    const isUnidentified = !rawSg || rawSg.toUpperCase() === 'UNIDENTIFIED';
+    const sgKey = isUnidentified ? '__UNIDENTIFIED__' : normalizeGeoGroupKey(rawSg);
+    const displayName = isUnidentified ? 'UNIDENTIFIED' : canonicalizeGeoLabel(rawSg) || rawSg;
+    const existing = groupedByPlace.get(sgKey);
+    if (existing) {
+      existing.rows.push(r);
+    } else {
+      groupedByPlace.set(sgKey, {
+        key: sgKey,
+        displayName,
+        groupType: r.group_type || (isUnidentified ? 'UNIDENTIFIED' : 'SUB_AREA'),
+        isUnidentified,
+        rows: [r],
+      });
+    }
+  }
+
+  const mergedVariants = mergeVariantGeoGroups(Array.from(groupedByPlace.values())).map((g) => ({
+    ...g,
+    groupType: groupedByPlace.get(g.key)?.groupType || (g.isUnidentified ? 'UNIDENTIFIED' : 'SUB_AREA'),
+  }));
+
+  const routeOrdered = orderGeoGroupsByProximity(mergedVariants, { aiOrderedKeys }).map((g) => ({
+    key: g.key,
+    displayName: g.displayName,
+    groupType:
+      groupedByPlace.get(g.key)?.groupType ||
+      (g.isUnidentified ? 'UNIDENTIFIED' : 'SUB_AREA'),
+    isUnidentified: Boolean(g.isUnidentified),
+    rows: sortRecordsForFieldRoute(g.rows),
+  }));
+
+  return routeOrdered;
+}
+
+export function buildChainedAreaRouteFromRecords(
+  records: GeoExportRecord[],
+  options?: {
+    aiAreaOrder?: string[] | null;
+    aiPlaceOrdersByArea?: Map<string, string[]>;
+  }
+): ChainedRoutedArea<GeoExportRecord>[] {
+  const areaBuckets = new Map<
+    string,
+    {
+      key: string;
+      displayName: string;
+      isUnassigned: boolean;
+      rows: GeoExportRecord[];
+      placeMap: Map<string, { key: string; displayName: string; groupType: string; isUnidentified: boolean; rows: GeoExportRecord[] }>;
+    }
+  >();
+
+  for (const r of records) {
+    const rawArea = r.area && r.area.trim() ? r.area.trim() : '';
+    const isUnassigned = !rawArea || rawArea.toUpperCase() === 'UNASSIGNED';
+    const areaKey = isUnassigned ? '__UNASSIGNED__' : normalizeGeoGroupKey(rawArea);
+    const areaDisplay = isUnassigned ? 'UNASSIGNED' : canonicalizeGeoLabel(rawArea) || rawArea;
+
+    let areaBucket = areaBuckets.get(areaKey);
+    if (!areaBucket) {
+      areaBucket = {
+        key: areaKey,
+        displayName: areaDisplay,
+        isUnassigned,
+        rows: [],
+        placeMap: new Map(),
+      };
+      areaBuckets.set(areaKey, areaBucket);
+    }
+    areaBucket.rows.push(r);
+
+    const rawSg = (r.street_group || '').trim();
+    const isUnidentified = !rawSg || rawSg.toUpperCase() === 'UNIDENTIFIED';
+    const sgKey = isUnidentified ? '__UNIDENTIFIED__' : normalizeGeoGroupKey(rawSg);
+    const sgDisplay = isUnidentified ? 'UNIDENTIFIED' : canonicalizeGeoLabel(rawSg) || rawSg;
+
+    let placeBucket = areaBucket.placeMap.get(sgKey);
+    if (!placeBucket) {
+      placeBucket = {
+        key: sgKey,
+        displayName: sgDisplay,
+        groupType: r.group_type || (isUnidentified ? 'UNIDENTIFIED' : 'SUB_AREA'),
+        isUnidentified,
+        rows: [],
+      };
+      areaBucket.placeMap.set(sgKey, placeBucket);
+    }
+    placeBucket.rows.push(r);
+  }
+
+  const areaInputs: ChainedAreaInput<GeoExportRecord>[] = Array.from(areaBuckets.values()).map((a) => ({
+    key: a.key,
+    displayName: a.displayName,
+    isUnassigned: a.isUnassigned,
+    rows: a.rows,
+    places: Array.from(a.placeMap.values()),
+  }));
+
+  return buildChainedAreaAndPlaceRoute(areaInputs, {
+    aiAreaOrder: options?.aiAreaOrder,
+    aiPlaceOrdersByArea: options?.aiPlaceOrdersByArea,
+    mergePlaceVariants: true,
+    sortRowsInsidePlace: true,
+  });
+}
+
 export async function buildAreaWorkbookWithStats(params: {
   areaName: string;
   records: GeoExportRecord[];
   originalHeaders: string[];
+  aiOrderedKeys?: string[] | null;
 }): Promise<{ buffer: Buffer; stats: AreaWorkbookStats }> {
   if (params.records.length === 0) {
     throw new Error(`Cannot create empty Area workbook for "${params.areaName}"`);
@@ -337,61 +486,40 @@ export async function buildAreaWorkbookWithStats(params: {
   wb.creator = 'MARSFORCE';
   wb.created = new Date();
 
-  // Consolidate street/locality groups case-insensitively inside this Area
-  const groupedByStreet = new Map<string, { displayName: string; groupType: string; rows: GeoExportRecord[] }>();
-  for (const r of params.records) {
-    const rawSg = (r.street_group || '').trim();
-    const isUnidentified = !rawSg || rawSg.toUpperCase() === 'UNIDENTIFIED';
-    const sgKey = isUnidentified ? '__UNIDENTIFIED__' : normalizeGeoGroupKey(rawSg);
-    const displayName = isUnidentified ? 'UNIDENTIFIED' : canonicalizeGeoLabel(rawSg) || rawSg;
-    const existing = groupedByStreet.get(sgKey);
-    if (existing) {
-      existing.rows.push(r);
-    } else {
-      groupedByStreet.set(sgKey, {
-        displayName,
-        groupType: r.group_type || (isUnidentified ? 'UNIDENTIFIED' : 'STREET'),
-        rows: [r],
-      });
-    }
-  }
+  const sortedPlaces = buildOrderedPlaceGroups(params.records, params.aiOrderedKeys);
+  const routeOrderedRecords = sortedPlaces.flatMap((g) => g.rows);
 
-  // Sort street groups naturally (alphabetical + numeric Cross 4 < Cross 5 < Cross 10), UNIDENTIFIED LAST
-  const sortedStreets = Array.from(groupedByStreet.entries()).sort((a, b) => {
-    if (a[0] === '__UNIDENTIFIED__') return 1;
-    if (b[0] === '__UNIDENTIFIED__') return -1;
-    return naturalGeoCompare(a[1].displayName, b[1].displayName);
-  });
-
-  const needsReviewRows = params.records.filter(isNeedsReviewRow);
-  const unidentifiedRows = groupedByStreet.get('__UNIDENTIFIED__')?.rows || [];
-  const identifiedStreetGroupsCount = sortedStreets.filter(([key]) => key !== '__UNIDENTIFIED__').length;
-  const conflictCount = params.records.filter((r) => r.geographic_review_status === 'CONFLICT').length;
+  const needsReviewRows = routeOrderedRecords.filter(isNeedsReviewRow);
+  const unidentifiedRows = sortedPlaces.find((g) => g.isUnidentified || g.key === '__UNIDENTIFIED__')?.rows || [];
+  const identifiedStreetGroupsCount = sortedPlaces.filter((g) => !g.isUnidentified && g.key !== '__UNIDENTIFIED__').length;
+  const conflictCount = routeOrderedRecords.filter((r) => r.geographic_review_status === 'CONFLICT').length;
   const processingDate = new Date().toISOString();
 
   // =========================================================================
-  // SHEET 1: STRUCTURED_DATA
-  // Main Area Banner -> Summary Banner -> Spacer -> Street Sections (Heading + Table Header + Customer Rows + Blank Separator) -> Footer
+  // SHEET 1: STRUCTURED_DATA (Field-Staff Route Layout)
+  // Row 1: Single frozen column header row (NO repeated table headers inside sheet)
+  // Body: Nearest-place ordered groups, each introduced by a centered bold section banner row
   // =========================================================================
   const structuredWs = wb.addWorksheet('STRUCTURED_DATA', {
-    views: [{ state: 'frozen', ySplit: 2 }],
+    views: [{ state: 'frozen', ySplit: 1 }],
   });
 
   const structuredColsSpec = [
-    { key: 'consumer_id', header: 'Consumer ID', width: 18, isTextId: true },
+    { key: '__seq__', header: 'Seq #', width: 8, isTextId: false },
+    { key: 'consumer_id', header: 'Consumer ID', width: 15, isTextId: true },
     { key: 'full_name', header: 'Customer Name', width: 24, isTextId: false },
-    { key: 'phone_display', header: 'Phone (Display)', width: 16, isTextId: true },
+    { key: 'phone_display', header: 'Mobile No', width: 16, isTextId: true },
+    { key: 'street', header: 'Street / Door No', width: 24, isTextId: false },
+    { key: '__address_display__', header: 'Address', width: 46, isTextId: false },
+    { key: 'street_group', header: 'Place / Locality', width: 24, isTextId: false },
+    { key: 'detected_area', header: 'Area', width: 18, isTextId: false },
+    { key: 'pin_code', header: 'PIN Code', width: 11, isTextId: true },
+    { key: 'city', header: 'City', width: 14, isTextId: false },
     { key: 'phone_e164', header: 'Phone (E.164)', width: 16, isTextId: true },
-    { key: 'street', header: 'Street / Door No', width: 28, isTextId: false },
-    { key: 'sub_area', header: 'SubArea / Locality', width: 22, isTextId: false },
-    { key: 'detected_area', header: 'Area', width: 20, isTextId: false },
-    { key: 'street_group', header: 'Street / Locality Group', width: 24, isTextId: false },
-    { key: 'city', header: 'City', width: 16, isTextId: false },
-    { key: 'pin_code', header: 'PIN Code', width: 12, isTextId: true },
-    { key: 'original_sheet_name', header: 'Source Sheet', width: 16, isTextId: false },
+    { key: 'original_sheet_name', header: 'Source Sheet', width: 14, isTextId: false },
     { key: 'original_row_number', header: 'Source Row #', width: 12, isTextId: false },
-    { key: 'geographic_review_status', header: 'Review Status', width: 16, isTextId: false },
-    { key: 'geographic_conflict_reason', header: 'Review Notes', width: 32, isTextId: false },
+    { key: '__location_flag__', header: 'Location Flag', width: 22, isTextId: false },
+    { key: 'geographic_review_status', header: 'Review Status', width: 14, isTextId: false },
     ...params.originalHeaders.map((h) => ({
       key: `orig__${h}`,
       header: `Orig: ${h}`,
@@ -407,73 +535,65 @@ export async function buildAreaWorkbookWithStats(params: {
 
   const endLetter = colNumberToLetter(structuredColsSpec.length);
 
-  // Row 1: Main Area Heading Banner
-  structuredWs.mergeCells(`A1:${endLetter}1`);
-  const areaTitleCell = structuredWs.getCell('A1');
-  areaTitleCell.value = neutralizeExcelCell(`AREA: ${params.areaName}`);
-  areaTitleCell.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
-  areaTitleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B2545' } };
-  areaTitleCell.alignment = { vertical: 'middle', horizontal: 'left' };
-  structuredWs.getRow(1).height = 30;
+  // Row 1: Single Frozen Table Header Row
+  const topHeaderRow = structuredWs.getRow(1);
+  topHeaderRow.height = 24;
+  structuredColsSpec.forEach((c, idx) => {
+    const cell = topHeaderRow.getCell(idx + 1);
+    cell.value = c.header;
+    cell.font = { bold: true, size: 10, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B2545' } };
+    cell.alignment = { vertical: 'middle', horizontal: 'left' };
+    cell.border = THIN_BORDER;
+  });
 
-  // Row 2: Total Customers Summary Banner
-  structuredWs.mergeCells(`A2:${endLetter}2`);
-  const summaryBannerCell = structuredWs.getCell('A2');
-  summaryBannerCell.value = neutralizeExcelCell(
-    `Total Customers: ${params.records.length} | Street / Locality Groups: ${identifiedStreetGroupsCount} | Unidentified: ${unidentifiedRows.length} | Needs Review: ${needsReviewRows.length}`
-  );
-  summaryBannerCell.font = { bold: true, size: 10, color: { argb: 'FFFFFFFF' } };
-  summaryBannerCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E3A8A' } };
-  summaryBannerCell.alignment = { vertical: 'middle', horizontal: 'left' };
-  structuredWs.getRow(2).height = 22;
-
-  // Row 3: Blank spacing row
-  structuredWs.getRow(3).height = 10;
-
-  let curRow = 4;
+  let curRow = 2;
   let structuredCount = 0;
+  let seqNum = 1;
+  let stopIdx = 1;
 
-  for (const [sgKey, info] of sortedStreets) {
-    // Street / Locality Heading Row
+  for (const info of sortedPlaces) {
     structuredWs.mergeCells(`A${curRow}:${endLetter}${curRow}`);
-    const streetTitle =
-      sgKey === '__UNIDENTIFIED__'
-        ? `STREET / LOCALITY NOT IDENTIFIED (${info.rows.length} Customers)`
-        : `${info.displayName} [${info.groupType}] (${info.rows.length} Customers)`;
+    const sectionLabel = info.isUnidentified
+      ? `FLAGGED FOR MANUAL VERIFICATION — UNIDENTIFIED LOCATION (${info.rows.length})`
+      : `STOP #${stopIdx++} — ${info.displayName.toUpperCase()} (${info.rows.length})`;
     const stBanner = structuredWs.getCell(`A${curRow}`);
-    stBanner.value = neutralizeExcelCell(streetTitle);
-    stBanner.font = { bold: true, size: 11, color: { argb: 'FF0B2545' } };
-    stBanner.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDBEAFE' } };
-    stBanner.alignment = { vertical: 'middle', horizontal: 'left' };
-    stBanner.border = LIGHT_BLUE_BORDER;
-    structuredWs.getRow(curRow).height = 24;
+    stBanner.value = neutralizeExcelCell(sectionLabel);
+    stBanner.font = {
+      bold: true,
+      size: 11,
+      color: { argb: info.isUnidentified ? 'FF92400E' : 'FF0B2545' },
+    };
+    stBanner.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: info.isUnidentified ? 'FFFEF3C7' : 'FFEFF6FF' },
+    };
+    stBanner.alignment = { vertical: 'middle', horizontal: 'center' };
+    stBanner.border = SECTION_BANNER_BORDER;
+    structuredWs.getRow(curRow).height = 21;
     curRow++;
 
-    // Customer Table Header Row
-    const tblHdr = structuredWs.getRow(curRow++);
-    tblHdr.height = 22;
-    structuredColsSpec.forEach((c, idx) => {
-      const cell = tblHdr.getCell(idx + 1);
-      cell.value = c.header;
-      cell.font = { bold: true, size: 10, color: { argb: 'FFFFFFFF' } };
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E3A8A' } };
-      cell.alignment = { vertical: 'middle', horizontal: 'left' };
-      cell.border = THIN_BORDER;
-    });
-
-    // Customer Rows (source order preserved)
+    // Customer Rows directly underneath, sorted by street & natural door number
     info.rows.forEach((r, rIdx) => {
       const row = structuredWs.getRow(curRow++);
       const raw = r.raw_data || {};
+      const currentSeq = seqNum++;
       structuredColsSpec.forEach((c, cIdx) => {
         const cell = row.getCell(cIdx + 1);
         let val: string | number | null;
-        if (c.key.startsWith('orig__')) {
+        if (c.key === '__seq__') {
+          val = currentSeq;
+        } else if (c.key === '__location_flag__') {
+          val = getLocationFlag(r);
+        } else if (c.key.startsWith('orig__')) {
           val = neutralizeExcelCell(raw[c.key.slice(6)] ?? '');
+        } else if (c.key === '__address_display__') {
+          val = neutralizeExcelCell(extractBestAddressDisplay(r));
         } else if (c.key === 'street') {
           val = neutralizeExcelCell(r.street || '');
-        } else if (c.key === 'sub_area') {
-          val = neutralizeExcelCell(r.sub_area || '');
+        } else if (c.key === 'street_group') {
+          val = neutralizeExcelCell(info.isUnidentified ? 'UNIDENTIFIED' : info.displayName);
         } else {
           val = getDerivedCellVal(r, c.key);
         }
@@ -489,57 +609,44 @@ export async function buildAreaWorkbookWithStats(params: {
       });
       structuredCount++;
     });
-
-    // Blank separator row between street sections
-    structuredWs.getRow(curRow).height = 10;
-    curRow++;
   }
 
-  // Bottom Footer Row
-  structuredWs.mergeCells(`A${curRow}:${endLetter}${curRow}`);
-  const footerCell = structuredWs.getCell(`A${curRow}`);
-  footerCell.value = neutralizeExcelCell(
-    `END OF AREA: ${params.areaName} — Total Customers Reconciled: ${structuredCount}`
-  );
-  footerCell.font = { bold: true, size: 10, color: { argb: 'FFFFFFFF' } };
-  footerCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B2545' } };
-  footerCell.alignment = { vertical: 'middle', horizontal: 'left' };
-  structuredWs.getRow(curRow).height = 24;
-
   // =========================================================================
-  // SHEET 2: ALL_RECORDS (Continuous machine-readable table with auto-filter)
+  // SHEET 2: ALL_RECORDS (Continuous machine-readable table in route order with auto-filter)
   // =========================================================================
   const allWs = wb.addWorksheet('ALL_RECORDS', { views: [{ state: 'frozen', ySplit: 1 }] });
-  writeMachineReadableRecordsSheet(allWs, params.records, params.originalHeaders);
+  writeMachineReadableRecordsSheet(allWs, routeOrderedRecords, params.originalHeaders);
 
   // =========================================================================
-  // SHEET 3: SUMMARY (Area metrics & per-street breakdown)
+  // SHEET 3: SUMMARY (Area metrics & Route-ordered Place breakdown)
   // =========================================================================
   const summaryWs = wb.addWorksheet('SUMMARY');
-  summaryWs.getColumn(1).width = 36;
-  summaryWs.getColumn(2).width = 20;
+  summaryWs.getColumn(1).width = 14;
+  summaryWs.getColumn(2).width = 36;
   summaryWs.getColumn(3).width = 18;
-  summaryWs.getColumn(4).width = 18;
-  summaryWs.getColumn(5).width = 18;
+  summaryWs.getColumn(4).width = 16;
+  summaryWs.getColumn(5).width = 16;
+  summaryWs.getColumn(6).width = 16;
 
-  summaryWs.mergeCells('A1:E1');
+  summaryWs.mergeCells('A1:F1');
   const sumTitle = summaryWs.getCell('A1');
-  sumTitle.value = neutralizeExcelCell(`MARSFORCE Area Summary — ${params.areaName}`);
+  sumTitle.value = neutralizeExcelCell(`MARSFORCE Area Route Summary — ${params.areaName}`);
   sumTitle.font = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } };
   sumTitle.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B2545' } };
   summaryWs.getRow(1).height = 28;
 
   summaryWs.addRow(['Area Name', neutralizeExcelCell(params.areaName)]);
   summaryWs.addRow(['Total Customers', params.records.length]);
-  summaryWs.addRow(['Identified Street / Locality Groups', identifiedStreetGroupsCount]);
-  summaryWs.addRow(['Unidentified Street Count', unidentifiedRows.length]);
+  summaryWs.addRow(['Place / Locality Route Stops', identifiedStreetGroupsCount]);
+  summaryWs.addRow(['Unidentified Place Count', unidentifiedRows.length]);
   summaryWs.addRow(['Needs Review / Conflict Count', needsReviewRows.length]);
   summaryWs.addRow(['Heading Conflicts Count', conflictCount]);
   summaryWs.addRow(['Processing Date (UTC)', processingDate]);
   summaryWs.addRow([]);
 
   const brkHdr = summaryWs.addRow([
-    'Street / Locality Group',
+    'Route Stop #',
+    'Place / Locality Group',
     'Group Type',
     'Customer Count',
     'Needs Review',
@@ -552,10 +659,11 @@ export async function buildAreaWorkbookWithStats(params: {
   });
 
   let summaryBreakdownSum = 0;
-  for (const [, info] of sortedStreets) {
+  sortedPlaces.forEach((info, idx) => {
     const nrCount = info.rows.filter(isNeedsReviewRow).length;
     const cfCount = info.rows.filter((r) => r.geographic_review_status === 'CONFLICT').length;
     const row = summaryWs.addRow([
+      info.isUnidentified ? 'FLAGGED' : idx + 1,
       neutralizeExcelCell(info.displayName),
       info.groupType,
       info.rows.length,
@@ -566,7 +674,7 @@ export async function buildAreaWorkbookWithStats(params: {
       c.border = THIN_BORDER;
     });
     summaryBreakdownSum += info.rows.length;
-  }
+  });
 
   // =========================================================================
   // SHEET 4 (OPTIONAL): NEEDS_REVIEW (Created ONLY when flagged rows exist)
@@ -594,10 +702,487 @@ export async function buildAreaWorkbookWithStats(params: {
   };
 }
 
+export interface CombinedRouteWorkbookStats {
+  totalCount: number;
+  distinctValidAreaCount: number;
+  unassignedAreaRecordsCount: number;
+  identifiedPlaceStopsCount: number;
+  unidentifiedLocationCount: number;
+  needsReviewCount: number;
+  conflictCount: number;
+  structuredDataCount: number;
+  allRecordsCount: number;
+  summaryTotalCount: number;
+  worksheetNames: string[];
+  areaRouteOrder: Array<{
+    areaStopNumber: number | null;
+    areaName: string;
+    isUnassigned: boolean;
+    transitionedFrom: { areaName: string; placeName: string } | null;
+    customerCount: number;
+    placeCount: number;
+    seqRange: string;
+  }>;
+}
+
+/**
+ * Generates ONE continuous multi-Area, street-by-street route-optimized Excel workbook:
+ * - Areas are sequenced via exit-to-entry nearest-neighbor chaining (Area #1's last location -> nearest Area #2 entry).
+ * - Streets / Localities inside every Area are ordered by nearest geographic proximity & accessibility.
+ * - Area #2 starts immediately below Area #1 inside STRUCTURED_DATA with prominent Area & Street headings
+ *   and continuous sequence numbers (1..N) across the entire dataset.
+ * - Unidentified locations and Unassigned areas are flagged for manual verification without losing any row.
+ */
+export async function buildCombinedRouteWorkbookWithStats(params: {
+  records: GeoExportRecord[];
+  originalHeaders: string[];
+  aiAreaOrder?: string[] | null;
+  aiPlaceOrdersByArea?: Map<string, string[]>;
+  onProgress?: (pct: number) => Promise<void>;
+}): Promise<{ buffer: Buffer; stats: CombinedRouteWorkbookStats }> {
+  if (params.records.length === 0) {
+    throw new Error('Cannot generate route-optimized workbook from empty record set.');
+  }
+
+  const uniqueIds = new Set(params.records.map((r) => r.id));
+  if (uniqueIds.size !== params.records.length) {
+    throw new Error(
+      `EXPORT_RECONCILIATION_FAILED: Duplicate customer record IDs detected (${params.records.length} rows vs ${uniqueIds.size} unique IDs).`
+    );
+  }
+
+  if (params.onProgress) await params.onProgress(20);
+
+  const chainedAreas = buildChainedAreaRouteFromRecords(params.records, {
+    aiAreaOrder: params.aiAreaOrder,
+    aiPlaceOrdersByArea: params.aiPlaceOrdersByArea,
+  });
+
+  if (params.onProgress) await params.onProgress(40);
+
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'MARSFORCE';
+  wb.created = new Date();
+
+  const structuredWs = wb.addWorksheet('STRUCTURED_DATA', {
+    views: [{ state: 'frozen', ySplit: 1 }],
+  });
+
+  const structuredColsSpec = [
+    { key: '__seq__', header: 'Seq #', width: 8, isTextId: false },
+    { key: '__area_stop__', header: 'Area Stop #', width: 11, isTextId: false },
+    { key: '__place_stop__', header: 'Place Stop #', width: 12, isTextId: false },
+    { key: 'consumer_id', header: 'Consumer ID', width: 15, isTextId: true },
+    { key: 'full_name', header: 'Customer Name', width: 24, isTextId: false },
+    { key: 'phone_display', header: 'Mobile No', width: 16, isTextId: true },
+    { key: 'street', header: 'Street / Door No', width: 24, isTextId: false },
+    { key: '__address_display__', header: 'Address', width: 46, isTextId: false },
+    { key: 'street_group', header: 'Place / Locality', width: 24, isTextId: false },
+    { key: 'detected_area', header: 'Area', width: 18, isTextId: false },
+    { key: 'pin_code', header: 'PIN Code', width: 11, isTextId: true },
+    { key: 'city', header: 'City', width: 14, isTextId: false },
+    { key: 'phone_e164', header: 'Phone (E.164)', width: 16, isTextId: true },
+    { key: '__location_flag__', header: 'Location Flag', width: 24, isTextId: false },
+    { key: 'geographic_review_status', header: 'Review Status', width: 14, isTextId: false },
+    { key: 'original_sheet_name', header: 'Source Sheet', width: 14, isTextId: false },
+    { key: 'original_row_number', header: 'Source Row #', width: 12, isTextId: false },
+    ...params.originalHeaders.map((h) => ({
+      key: `orig__${h}`,
+      header: `Orig: ${h}`,
+      width: 22,
+      isTextId: isTextIdColumn(h),
+    })),
+  ];
+
+  structuredColsSpec.forEach((c, idx) => {
+    structuredWs.getColumn(idx + 1).width = c.width;
+    if (c.isTextId) structuredWs.getColumn(idx + 1).numFmt = '@';
+  });
+
+  const endLetter = colNumberToLetter(structuredColsSpec.length);
+
+  // Row 1: Single Frozen Table Header Row
+  const topHeaderRow = structuredWs.getRow(1);
+  topHeaderRow.height = 24;
+  structuredColsSpec.forEach((c, idx) => {
+    const cell = topHeaderRow.getCell(idx + 1);
+    cell.value = c.header;
+    cell.font = { bold: true, size: 10, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B2545' } };
+    cell.alignment = { vertical: 'middle', horizontal: 'left' };
+    cell.border = THIN_BORDER;
+  });
+
+  let curRow = 2;
+  let seqNum = 1;
+  let structuredCount = 0;
+  let identifiedPlaceStopsCount = 0;
+  let unidentifiedLocationCount = 0;
+
+  const routeOrderedFlat: Array<{
+    seqNum: number;
+    areaStopLabel: string;
+    placeStopLabel: string;
+    placeDisplayName: string;
+    record: GeoExportRecord;
+  }> = [];
+
+  const areaRouteOrder: CombinedRouteWorkbookStats['areaRouteOrder'] = [];
+  const summaryRows: Array<{
+    areaStopLabel: string;
+    placeStopLabel: string;
+    areaName: string;
+    transitionNote: string;
+    placeName: string;
+    groupType: string;
+    count: number;
+    seqRange: string;
+    needsReviewCount: number;
+    flagNote: string;
+  }> = [];
+
+  for (const area of chainedAreas) {
+    const areaStartSeq = seqNum;
+    const namedPlaces = area.orderedPlaces.filter((p) => !p.isUnidentified);
+    identifiedPlaceStopsCount += namedPlaces.length;
+
+    const areaStopLabel = area.isUnassigned ? 'FLAGGED' : String(area.areaStopNumber ?? '');
+    const transitionStr = area.transitionedFrom
+      ? `Next Nearest after ${area.transitionedFrom.areaName} (${area.transitionedFrom.placeName})`
+      : '';
+
+    // Area Heading Banner Row
+    structuredWs.mergeCells(`A${curRow}:${endLetter}${curRow}`);
+    const areaBannerText = area.isUnassigned
+      ? `UNASSIGNED AREA — FLAGGED FOR MANUAL VERIFICATION (${area.rows.length} Customer${area.rows.length === 1 ? '' : 's'})`
+      : `AREA #${area.areaStopNumber}: ${area.displayName.toUpperCase()}${
+          transitionStr ? `  |  ${transitionStr}` : ''
+        }  —  ${namedPlaces.length} Place${namedPlaces.length === 1 ? '' : 's'} | ${area.rows.length} Customer${
+          area.rows.length === 1 ? '' : 's'
+        }`;
+    const areaCell = structuredWs.getCell(`A${curRow}`);
+    areaCell.value = neutralizeExcelCell(areaBannerText);
+    areaCell.font = {
+      bold: true,
+      size: 11,
+      color: { argb: area.isUnassigned ? 'FF7C2D12' : 'FFFFFFFF' },
+    };
+    areaCell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: area.isUnassigned ? 'FFFDE68A' : 'FF1E3A8A' },
+    };
+    areaCell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+    areaCell.border = SECTION_BANNER_BORDER;
+    structuredWs.getRow(curRow).height = 24;
+    curRow++;
+
+    for (const place of area.orderedPlaces) {
+      if (place.isUnidentified) unidentifiedLocationCount += place.rows.length;
+
+      const placeStopLabel = place.isUnidentified
+        ? 'FLAGGED'
+        : area.isUnassigned
+          ? `U.${place.placeStopNumber ?? 1}`
+          : `${area.areaStopNumber}.${place.placeStopNumber ?? 1}`;
+
+      // Street / Locality Sub-Heading Banner Row
+      structuredWs.mergeCells(`A${curRow}:${endLetter}${curRow}`);
+      const placeBannerText = place.isUnidentified
+        ? `FLAGGED FOR MANUAL VERIFICATION — UNIDENTIFIED LOCATION IN ${area.displayName.toUpperCase()} (${place.rows.length})`
+        : `Stop ${placeStopLabel} — ${place.displayName.toUpperCase()} [${place.groupType}] (${place.rows.length} Customer${
+            place.rows.length === 1 ? '' : 's'
+          })`;
+      const stBanner = structuredWs.getCell(`A${curRow}`);
+      stBanner.value = neutralizeExcelCell(placeBannerText);
+      stBanner.font = {
+        bold: true,
+        size: 10,
+        color: { argb: place.isUnidentified ? 'FF92400E' : 'FF0B2545' },
+      };
+      stBanner.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: place.isUnidentified ? 'FFFEF3C7' : 'FFEFF6FF' },
+      };
+      stBanner.alignment = { vertical: 'middle', horizontal: 'center' };
+      stBanner.border = SECTION_BANNER_BORDER;
+      structuredWs.getRow(curRow).height = 20;
+      curRow++;
+
+      const placeStartSeq = seqNum;
+      place.rows.forEach((r, rIdx) => {
+        const currentSeq = seqNum++;
+        const row = structuredWs.getRow(curRow++);
+        const raw = r.raw_data || {};
+        const flagVal = getLocationFlag(r);
+        const isFlagged = flagVal !== 'OK';
+
+        structuredColsSpec.forEach((c, cIdx) => {
+          const cell = row.getCell(cIdx + 1);
+          let val: string | number | null;
+          if (c.key === '__seq__') {
+            val = currentSeq;
+          } else if (c.key === '__area_stop__') {
+            val = areaStopLabel;
+          } else if (c.key === '__place_stop__') {
+            val = placeStopLabel;
+          } else if (c.key === '__location_flag__') {
+            val = flagVal;
+          } else if (c.key.startsWith('orig__')) {
+            val = neutralizeExcelCell(raw[c.key.slice(6)] ?? '');
+          } else if (c.key === '__address_display__') {
+            val = neutralizeExcelCell(extractBestAddressDisplay(r));
+          } else if (c.key === 'street') {
+            val = neutralizeExcelCell(r.street || '');
+          } else if (c.key === 'street_group') {
+            val = neutralizeExcelCell(place.isUnidentified ? 'UNIDENTIFIED' : place.displayName);
+          } else {
+            val = getDerivedCellVal(r, c.key);
+          }
+          cell.value = val;
+          if (c.isTextId) cell.numFmt = '@';
+          cell.border = THIN_BORDER;
+          cell.alignment = { vertical: 'top', wrapText: true };
+          cell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: {
+              argb: isFlagged && c.key === '__location_flag__' ? 'FFFEF3C7' : rIdx % 2 === 1 ? 'FFF8FAFC' : 'FFFFFFFF',
+            },
+          };
+          if (isFlagged && c.key === '__location_flag__') {
+            cell.font = { bold: true, color: { argb: 'FF92400E' } };
+          }
+        });
+
+        routeOrderedFlat.push({
+          seqNum: currentSeq,
+          areaStopLabel,
+          placeStopLabel,
+          placeDisplayName: place.isUnidentified ? 'UNIDENTIFIED' : place.displayName,
+          record: r,
+        });
+        structuredCount++;
+      });
+      const placeEndSeq = seqNum - 1;
+
+      summaryRows.push({
+        areaStopLabel,
+        placeStopLabel,
+        areaName: area.displayName,
+        transitionNote: transitionStr || 'Route Start Anchor',
+        placeName: place.displayName,
+        groupType: place.groupType,
+        count: place.rows.length,
+        seqRange: placeStartSeq === placeEndSeq ? `${placeStartSeq}` : `${placeStartSeq}–${placeEndSeq}`,
+        needsReviewCount: place.rows.filter(isNeedsReviewRow).length,
+        flagNote: place.isUnidentified || area.isUnassigned ? 'MANUAL VERIFICATION REQUIRED' : 'OPTIMIZED',
+      });
+    }
+
+    const areaEndSeq = seqNum - 1;
+    areaRouteOrder.push({
+      areaStopNumber: area.areaStopNumber,
+      areaName: area.displayName,
+      isUnassigned: area.isUnassigned,
+      transitionedFrom: area.transitionedFrom,
+      customerCount: area.rows.length,
+      placeCount: namedPlaces.length,
+      seqRange: areaStartSeq === areaEndSeq ? `${areaStartSeq}` : `${areaStartSeq}–${areaEndSeq}`,
+    });
+  }
+
+  if (params.onProgress) await params.onProgress(65);
+
+  // =========================================================================
+  // SHEET 2: ALL_RECORDS (Continuous machine-readable table in chained route order)
+  // =========================================================================
+  const allWs = wb.addWorksheet('ALL_RECORDS', { views: [{ state: 'frozen', ySplit: 1 }] });
+  const allColsSpec = [
+    { key: '__seq__', header: 'Visit Seq #', width: 11, isTextId: false },
+    { key: '__area_stop__', header: 'Area Stop #', width: 11, isTextId: false },
+    { key: '__place_stop__', header: 'Place Stop #', width: 12, isTextId: false },
+    { key: '__location_flag__', header: 'Location Flag', width: 24, isTextId: false },
+    ...params.originalHeaders.map((h) => ({
+      header: `Orig: ${h}`,
+      key: `orig__${h}`,
+      width: 20,
+      isTextId: isTextIdColumn(h),
+    })),
+    ...DERIVED_COLUMNS.map((d) => ({
+      header: d.header,
+      key: d.key,
+      width: d.width,
+      isTextId: Boolean(d.isTextId),
+    })),
+  ];
+  allWs.columns = allColsSpec.map((c) => ({
+    header: c.header,
+    key: c.key,
+    width: c.width,
+    style: c.isTextId ? { numFmt: '@' } : undefined,
+  }));
+  const allHdr = allWs.getRow(1);
+  allHdr.height = 24;
+  allHdr.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B2545' } };
+    cell.alignment = { vertical: 'middle', horizontal: 'left' };
+    cell.border = THIN_BORDER;
+  });
+  routeOrderedFlat.forEach((item, idx) => {
+    const r = item.record;
+    const raw = r.raw_data || {};
+    const rowObj: Record<string, unknown> = {
+      __seq__: item.seqNum,
+      __area_stop__: item.areaStopLabel,
+      __place_stop__: item.placeStopLabel,
+      __location_flag__: getLocationFlag(r),
+    };
+    for (const h of params.originalHeaders) {
+      rowObj[`orig__${h}`] = neutralizeExcelCell(raw[h] ?? '');
+    }
+    for (const d of DERIVED_COLUMNS) {
+      rowObj[d.key] = d.key === 'street_group' ? neutralizeExcelCell(item.placeDisplayName) : getDerivedCellVal(r, d.key);
+    }
+    const row = allWs.addRow(rowObj);
+    row.eachCell((cell, colNumber) => {
+      const spec = allColsSpec[colNumber - 1];
+      if (spec?.isTextId) cell.numFmt = '@';
+      cell.border = THIN_BORDER;
+      cell.alignment = { vertical: 'top', wrapText: true };
+      if (idx % 2 === 1) {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
+      }
+    });
+  });
+  if (allColsSpec.length > 0) {
+    allWs.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: Math.max(1, routeOrderedFlat.length + 1), column: allColsSpec.length },
+    };
+  }
+
+  // =========================================================================
+  // SHEET 3: SUMMARY (Chained Route Itinerary + Reconciliation)
+  // =========================================================================
+  const summaryWs = wb.addWorksheet('SUMMARY');
+  const sumWidths = [12, 12, 24, 38, 28, 16, 12, 14, 14, 24];
+  sumWidths.forEach((w, i) => {
+    summaryWs.getColumn(i + 1).width = w;
+  });
+
+  summaryWs.mergeCells('A1:J1');
+  const sumTitle = summaryWs.getCell('A1');
+  sumTitle.value = 'MARSFORCE — Route-Optimized Master Field Visit Schedule';
+  sumTitle.font = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } };
+  sumTitle.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B2545' } };
+  summaryWs.getRow(1).height = 28;
+
+  const validAreasCount = chainedAreas.filter((a) => !a.isUnassigned).length;
+  const unassignedCount = chainedAreas.filter((a) => a.isUnassigned).reduce((s, a) => s + a.rows.length, 0);
+  const needsReviewRecords = routeOrderedFlat.map((x) => x.record).filter(isNeedsReviewRow);
+  const conflictCount = routeOrderedFlat.filter((x) => x.record.geographic_review_status === 'CONFLICT').length;
+
+  summaryWs.addRow(['Total Customer Records (100% Preserved)', params.records.length]);
+  summaryWs.addRow(['Chained Valid Areas Covered', validAreasCount]);
+  summaryWs.addRow(['Total Street / Locality Route Stops', identifiedPlaceStopsCount]);
+  summaryWs.addRow(['Unassigned Area Records (Flagged)', unassignedCount]);
+  summaryWs.addRow(['Unidentified Location Records (Flagged)', unidentifiedLocationCount]);
+  summaryWs.addRow(['Total Flagged for Manual Verification', needsReviewRecords.length]);
+  summaryWs.addRow(['Routing Method', 'Chained Exit-to-Entry Nearest Area & Nearest Street (Non-Alphabetical)']);
+  summaryWs.addRow(['Generated At (UTC)', new Date().toISOString()]);
+  summaryWs.addRow([]);
+
+  const brkHdr = summaryWs.addRow([
+    'Area Stop #',
+    'Place Stop #',
+    'Area',
+    'Chained Transition (Exit → Entry)',
+    'Street / Locality Group',
+    'Group Type',
+    'Customers',
+    'Visit Seq Range',
+    'Needs Review',
+    'Location Flag',
+  ]);
+  brkHdr.eachCell((c) => {
+    c.font = { bold: true, size: 10, color: { argb: 'FFFFFFFF' } };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E3A8A' } };
+    c.border = THIN_BORDER;
+  });
+
+  let summaryTotalCount = 0;
+  for (const sr of summaryRows) {
+    const row = summaryWs.addRow([
+      sr.areaStopLabel,
+      sr.placeStopLabel,
+      neutralizeExcelCell(sr.areaName),
+      neutralizeExcelCell(sr.transitionNote),
+      neutralizeExcelCell(sr.placeName),
+      sr.groupType,
+      sr.count,
+      sr.seqRange,
+      sr.needsReviewCount,
+      sr.flagNote,
+    ]);
+    row.eachCell((c, colIdx) => {
+      c.border = THIN_BORDER;
+      if (sr.flagNote !== 'OPTIMIZED' && colIdx === 10) {
+        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF3C7' } };
+        c.font = { bold: true, color: { argb: 'FF92400E' } };
+      }
+    });
+    summaryTotalCount += sr.count;
+  }
+
+  // =========================================================================
+  // SHEET 4 (OPTIONAL): NEEDS_REVIEW (Flagged for Manual Verification)
+  // =========================================================================
+  if (needsReviewRecords.length > 0) {
+    const nrWs = wb.addWorksheet('NEEDS_REVIEW', { views: [{ state: 'frozen', ySplit: 1 }] });
+    writeMachineReadableRecordsSheet(nrWs, needsReviewRecords, params.originalHeaders);
+  }
+
+  if (
+    structuredCount !== params.records.length ||
+    routeOrderedFlat.length !== params.records.length ||
+    summaryTotalCount !== params.records.length
+  ) {
+    throw new Error(
+      `EXPORT_RECONCILIATION_FAILED: Combined route export mismatch (expected=${params.records.length}, ` +
+        `STRUCTURED_DATA=${structuredCount}, ALL_RECORDS=${routeOrderedFlat.length}, SUMMARY=${summaryTotalCount}).`
+    );
+  }
+
+  if (params.onProgress) await params.onProgress(90);
+
+  const out = await wb.xlsx.writeBuffer();
+  return {
+    buffer: Buffer.from(out),
+    stats: {
+      totalCount: params.records.length,
+      distinctValidAreaCount: validAreasCount,
+      unassignedAreaRecordsCount: unassignedCount,
+      identifiedPlaceStopsCount,
+      unidentifiedLocationCount,
+      needsReviewCount: needsReviewRecords.length,
+      conflictCount,
+      structuredDataCount: structuredCount,
+      allRecordsCount: routeOrderedFlat.length,
+      summaryTotalCount,
+      worksheetNames: wb.worksheets.map((w) => w.name),
+      areaRouteOrder,
+    },
+  };
+}
+
 export async function buildAreaWorkbookBuffer(params: {
   areaName: string;
   records: GeoExportRecord[];
   originalHeaders: string[];
+  aiOrderedKeys?: string[] | null;
 }): Promise<Buffer> {
   const { buffer } = await buildAreaWorkbookWithStats(params);
   return buffer;
@@ -658,66 +1243,21 @@ export async function buildAreaSummaryReportBuffer(params: {
     needsReviewRows: number;
     precisionLossRows: number;
   };
+  aiAreaOrder?: string[] | null;
+  aiPlaceOrdersByArea?: Map<string, string[]>;
 }): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'MARSFORCE';
   wb.created = new Date();
 
-  const areaStats = new Map<
-    string,
-    {
-      displayName: string;
-      isUnassigned: boolean;
-      total: number;
-      unidentified: number;
-      review: number;
-      conflicts: number;
-      streets: Map<string, { displayName: string; type: string; count: number; review: number }>;
-    }
-  >();
-
-  for (const r of params.records) {
-    const rawArea = r.area && r.area.trim() ? r.area.trim() : '';
-    const isUnassigned = !rawArea || rawArea.toUpperCase() === 'UNASSIGNED';
-    const areaKey = isUnassigned ? '__UNASSIGNED__' : normalizeGeoGroupKey(rawArea);
-    const areaName = isUnassigned ? 'UNASSIGNED' : canonicalizeGeoLabel(rawArea) || rawArea;
-    const rawSg = (r.street_group || '').trim();
-    const isUnidSg = !rawSg || rawSg.toUpperCase() === 'UNIDENTIFIED';
-    const sgKey = isUnidSg ? '__UNIDENTIFIED__' : normalizeGeoGroupKey(rawSg);
-    const sgName = isUnidSg ? 'UNIDENTIFIED' : canonicalizeGeoLabel(rawSg) || rawSg;
-
-    let a = areaStats.get(areaKey);
-    if (!a) {
-      a = {
-        displayName: areaName,
-        isUnassigned,
-        total: 0,
-        unidentified: 0,
-        review: 0,
-        conflicts: 0,
-        streets: new Map(),
-      };
-      areaStats.set(areaKey, a);
-    }
-    a.total++;
-    if (isUnidSg) a.unidentified++;
-    if (isNeedsReviewRow(r)) a.review++;
-    if (r.geographic_review_status === 'CONFLICT') a.conflicts++;
-
-    const st = a.streets.get(sgKey) || {
-      displayName: sgName,
-      type: r.group_type || (isUnidSg ? 'UNIDENTIFIED' : 'STREET'),
-      count: 0,
-      review: 0,
-    };
-    st.count++;
-    if (r.geographic_review_status !== 'CONFIRMED' && r.geographic_review_status !== 'APPROVED') st.review++;
-    a.streets.set(sgKey, st);
-  }
+  const orderedAreas = buildChainedAreaRouteFromRecords(params.records, {
+    aiAreaOrder: params.aiAreaOrder,
+    aiPlaceOrdersByArea: params.aiPlaceOrdersByArea,
+  });
 
   const areaWs = wb.addWorksheet('Area_Summary', { views: [{ state: 'frozen', ySplit: 5 }] });
-  areaWs.mergeCells('A1:F1');
-  areaWs.getCell('A1').value = 'MARSFORCE — Area & Street Categorisation Summary';
+  areaWs.mergeCells('A1:G1');
+  areaWs.getCell('A1').value = 'MARSFORCE — Chained Area & Place Route Summary';
   areaWs.getCell('A1').font = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } };
   areaWs.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B2545' } };
   areaWs.getRow(1).height = 28;
@@ -727,9 +1267,9 @@ export async function buildAreaSummaryReportBuffer(params: {
   areaWs.addRow(['Subtotal / Report Rows', params.reconciliation.subtotals, 'Precision-Loss Warnings', params.reconciliation.precisionLossRows]);
 
   const hdr = areaWs.getRow(5);
-  const headers = ['Area Name', 'Total Customers', 'Street/Locality Groups', 'Unidentified Street', 'Needs Review', 'Heading Conflicts'];
+  const headers = ['Area Stop #', 'Area Name', 'Total Customers', 'Place / Locality Stops', 'Unidentified Place', 'Needs Review', 'Heading Conflicts'];
   headers.forEach((h, i) => {
-    areaWs.getColumn(i + 1).width = i === 0 ? 28 : 20;
+    areaWs.getColumn(i + 1).width = i === 1 ? 28 : i === 0 ? 13 : 20;
     const cell = hdr.getCell(i + 1);
     cell.value = h;
     cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
@@ -737,31 +1277,12 @@ export async function buildAreaSummaryReportBuffer(params: {
     cell.border = THIN_BORDER;
   });
 
-  const sortedAreas = Array.from(areaStats.values()).sort((a, b) => {
-    if (a.isUnassigned) return 1;
-    if (b.isUnassigned) return -1;
-    return naturalGeoCompare(a.displayName, b.displayName);
-  });
-
-  for (const st of sortedAreas) {
-    const namedStreetsCount = Array.from(st.streets.keys()).filter((k) => k !== '__UNIDENTIFIED__').length;
-    const row = areaWs.addRow([
-      neutralizeExcelCell(st.displayName),
-      st.total,
-      namedStreetsCount,
-      st.unidentified,
-      st.review,
-      st.conflicts,
-    ]);
-    row.eachCell((c) => {
-      c.border = THIN_BORDER;
-    });
-  }
-
   const streetWs = wb.addWorksheet('Street_Breakdown', { views: [{ state: 'frozen', ySplit: 1 }] });
   streetWs.columns = [
+    { header: 'Area Stop #', key: 'areaStop', width: 12 },
     { header: 'Area Name', key: 'area', width: 26 },
-    { header: 'Street / Locality Group', key: 'street', width: 30 },
+    { header: 'Place Stop #', key: 'stop', width: 14 },
+    { header: 'Place / Locality Group', key: 'street', width: 30 },
     { header: 'Group Type', key: 'type', width: 18 },
     { header: 'Customer Count', key: 'count', width: 16 },
     { header: 'Needs Review Count', key: 'review', width: 18 },
@@ -770,21 +1291,41 @@ export async function buildAreaSummaryReportBuffer(params: {
     c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
     c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0B2545' } };
   });
-  for (const st of sortedAreas) {
-    const streetsList = Array.from(st.streets.entries()).sort((a, b) => {
-      if (a[0] === '__UNIDENTIFIED__') return 1;
-      if (b[0] === '__UNIDENTIFIED__') return -1;
-      return naturalGeoCompare(a[1].displayName, b[1].displayName);
+
+  for (const a of orderedAreas) {
+    const orderedPlaces = a.orderedPlaces;
+    const namedStopsCount = orderedPlaces.filter((p) => !p.isUnidentified).length;
+    const unidCount = orderedPlaces.find((p) => p.isUnidentified)?.rows.length || 0;
+    const reviewCount = a.rows.filter(isNeedsReviewRow).length;
+    const conflictCount = a.rows.filter((r) => r.geographic_review_status === 'CONFLICT').length;
+
+    const row = areaWs.addRow([
+      a.isUnassigned ? 'FLAGGED' : a.areaStopNumber,
+      neutralizeExcelCell(a.displayName),
+      a.rows.length,
+      namedStopsCount,
+      unidCount,
+      reviewCount,
+      conflictCount,
+    ]);
+    row.eachCell((c) => {
+      c.border = THIN_BORDER;
     });
-    for (const [, sInfo] of streetsList) {
+
+    orderedPlaces.forEach((p) => {
+      const pReview = p.rows.filter(
+        (r) => r.geographic_review_status !== 'CONFIRMED' && r.geographic_review_status !== 'APPROVED'
+      ).length;
       streetWs.addRow({
-        area: neutralizeExcelCell(st.displayName),
-        street: neutralizeExcelCell(sInfo.displayName),
-        type: sInfo.type,
-        count: sInfo.count,
-        review: sInfo.review,
+        areaStop: a.isUnassigned ? 'FLAGGED' : a.areaStopNumber,
+        area: neutralizeExcelCell(a.displayName),
+        stop: p.isUnidentified ? 'FLAGGED' : p.placeStopNumber ?? '—',
+        street: neutralizeExcelCell(p.displayName),
+        type: p.groupType,
+        count: p.rows.length,
+        review: pReview,
       });
-    }
+    });
   }
 
   const out = await wb.xlsx.writeBuffer();
@@ -984,6 +1525,8 @@ export async function buildGeoZipBundle(params: {
   mode: 'COMBINED_ZIP' | 'AREA_WISE';
   records: GeoExportRecord[];
   sourceRows: SourceRowAuditExportItem[];
+  aiAreaOrder?: string[] | null;
+  aiPlaceOrdersByArea?: Map<string, string[]>;
   onProgress?: (pct: number) => Promise<void>;
 }): Promise<{ zipBuffer: Buffer; manifest: Record<string, any> }> {
   const zip = new AdmZip();
@@ -997,25 +1540,19 @@ export async function buildGeoZipBundle(params: {
     );
   }
 
-  // Group records strictly by canonical Area (case-insensitive); separate unassigned records
-  const validAreasMap = new Map<string, { displayName: string; records: GeoExportRecord[] }>();
-  const unassignedRecords: GeoExportRecord[] = [];
-
-  for (const r of params.records) {
-    const rawArea = r.area && r.area.trim() ? r.area.trim() : '';
-    if (!rawArea || rawArea.toUpperCase() === 'UNASSIGNED') {
-      unassignedRecords.push(r);
-      continue;
-    }
-    const areaKey = normalizeGeoGroupKey(rawArea);
-    const displayName = canonicalizeGeoLabel(rawArea) || rawArea;
-    const existing = validAreasMap.get(areaKey);
-    if (existing) {
-      existing.records.push(r);
-    } else {
-      validAreasMap.set(areaKey, { displayName, records: [r] });
-    }
-  }
+  const chainedAll = buildChainedAreaRouteFromRecords(params.records, {
+    aiAreaOrder: params.aiAreaOrder,
+    aiPlaceOrdersByArea: params.aiPlaceOrdersByArea,
+  });
+  const sortedValidAreas = chainedAll
+    .filter((a) => !a.isUnassigned)
+    .map((a) => ({
+      key: a.key,
+      displayName: a.displayName,
+      records: a.rows,
+      orderedPlaceKeys: a.orderedPlaces.filter((p) => !p.isUnidentified).map((p) => p.key),
+    }));
+  const unassignedRecords = chainedAll.filter((a) => a.isUnassigned).flatMap((a) => a.rows);
 
   const usedAreaFilenames = new Set<string>();
   const areaFiles: string[] = [];
@@ -1044,7 +1581,12 @@ export async function buildGeoZipBundle(params: {
 
     zip.addFile(
       'AREA_SUMMARY.xlsx',
-      await buildAreaSummaryReportBuffer({ records: params.records, reconciliation: reconCounts })
+      await buildAreaSummaryReportBuffer({
+        records: params.records,
+        reconciliation: reconCounts,
+        aiAreaOrder: params.aiAreaOrder,
+        aiPlaceOrdersByArea: params.aiPlaceOrdersByArea,
+      })
     );
     zip.addFile(
       'PROCESSING_REPORT.xlsx',
@@ -1054,10 +1596,6 @@ export async function buildGeoZipBundle(params: {
     zip.addFile('ROW_AUDIT.xlsx', await buildRowAuditBuffer(params.sourceRows));
     if (params.onProgress) await params.onProgress(35);
   }
-
-  const sortedValidAreas = Array.from(validAreasMap.values()).sort((a, b) =>
-    naturalGeoCompare(a.displayName, b.displayName)
-  );
 
   let assignedExportedSum = 0;
   const totalAreas = Math.max(1, sortedValidAreas.length);
@@ -1073,6 +1611,10 @@ export async function buildGeoZipBundle(params: {
       areaName: areaGroup.displayName,
       records: areaGroup.records,
       originalHeaders,
+      aiOrderedKeys:
+        areaGroup.orderedPlaceKeys.length > 0
+          ? areaGroup.orderedPlaceKeys
+          : params.aiPlaceOrdersByArea?.get(areaGroup.key) || null,
     });
 
     // Strict per-Area reconciliation check

@@ -245,11 +245,11 @@ export function GeoCategorisationView({
   };
 
   const triggerExport = async (
-    exportMode: 'AREA_WISE' | 'COMBINED_ZIP',
+    exportMode: 'ROUTE_XLSX' | 'AREA_WISE' | 'COMBINED_ZIP',
     filters: { area?: string } = {}
   ) => {
     if (!selectedUploadId) return;
-    const dlKey = filters.area || '__ALL_ZIP__';
+    const dlKey = exportMode === 'ROUTE_XLSX' ? '__ROUTE_XLSX__' : filters.area || '__ALL_ZIP__';
     setDownloadingKey(dlKey);
     setErrorMsg(null);
     setStatusMsg(null);
@@ -426,11 +426,11 @@ export function GeoCategorisationView({
         <div>
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-blue-200">
             <MapPin className="w-3.5 h-3.5" />
-            Areas & Street Breakdown
+            Areas &amp; Place Route Hierarchy
           </div>
-          <h1 className="text-xl font-bold mt-1">Areas & Downloads</h1>
+          <h1 className="text-xl font-bold mt-1">Areas &amp; Downloads</h1>
           <p className="text-xs text-slate-300 mt-1">
-            Browse each Area and its streets, fix any misclassified rows, and download Excel files in one click.
+            Places and streets are ordered nearest-neighbor one after another for field visits. Click Re-Classify to refresh older uploads.
           </p>
         </div>
 
@@ -460,15 +460,26 @@ export function GeoCategorisationView({
           </select>
 
           {hasPermission('export') && selectedUploadId && (
-            <button
-              type="button"
-              disabled={downloadingKey !== null}
-              onClick={() => void triggerExport('AREA_WISE')}
-              className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer transition-colors whitespace-nowrap disabled:opacity-50"
-            >
-              <Archive className="w-4 h-4" />
-              {downloadingKey === '__ALL_ZIP__' ? 'Preparing ZIP...' : 'Download All Areas (ZIP)'}
-            </button>
+            <>
+              <button
+                type="button"
+                disabled={downloadingKey !== null}
+                onClick={() => void triggerExport('ROUTE_XLSX')}
+                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer transition-colors whitespace-nowrap disabled:opacity-50"
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                {downloadingKey === '__ROUTE_XLSX__' ? 'Optimizing Route...' : 'Download Route Excel (.xlsx)'}
+              </button>
+              <button
+                type="button"
+                disabled={downloadingKey !== null}
+                onClick={() => void triggerExport('AREA_WISE')}
+                className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-white cursor-pointer transition-colors whitespace-nowrap disabled:opacity-50"
+              >
+                <Archive className="w-4 h-4" />
+                {downloadingKey === '__ALL_ZIP__' ? 'Preparing ZIP...' : 'All Areas (ZIP)'}
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -617,7 +628,7 @@ export function GeoCategorisationView({
             }`}
           >
             <Layers className="w-3.5 h-3.5" />
-            Area & Street Hierarchy ({summary?.areas.length ?? 0})
+            Area &amp; Place Route Order ({summary?.areas.length ?? 0})
           </button>
           <button
             type="button"
@@ -722,8 +733,18 @@ export function GeoCategorisationView({
                         <ChevronRight className="w-4 h-4 text-slate-500" />
                       )}
                       <span className="text-sm font-bold text-slate-900 dark:text-white">
+                        {!area.isUnassigned && area.areaStopNumber ? (
+                          <span className="text-xs font-mono-tabular text-blue-600 dark:text-blue-400 mr-2">
+                            Area #{area.areaStopNumber}
+                          </span>
+                        ) : null}
                         {area.areaName}
                       </span>
+                      {area.transitionedFrom && (
+                        <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                          (from {area.transitionedFrom.areaName} → {area.transitionedFrom.placeName})
+                        </span>
+                      )}
                       <span className="text-xs font-mono-tabular text-blue-700 dark:text-blue-300 font-semibold">
                         {area.totalCount.toLocaleString()} customers
                       </span>
@@ -763,7 +784,7 @@ export function GeoCategorisationView({
 
                   {isOpen && (
                     <div className="divide-y divide-slate-200 dark:divide-slate-800">
-                      {area.streetGroups.map((sg) => {
+                      {area.streetGroups.map((sg, sgIdx) => {
                         const sKey = `${area.areaKey}::${sg.streetGroup}`;
                         const streetRecords = expandedStreets.get(sKey);
                         const isStreetOpen = Boolean(streetRecords);
@@ -779,6 +800,11 @@ export function GeoCategorisationView({
                                   <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
                                 ) : (
                                   <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+                                )}
+                                {sg.streetGroup !== 'UNIDENTIFIED' && (
+                                  <span className="text-[11px] font-mono-tabular font-semibold text-blue-700 dark:text-blue-400">
+                                    #{sgIdx + 1}
+                                  </span>
                                 )}
                                 <span
                                   className={`text-xs font-semibold ${

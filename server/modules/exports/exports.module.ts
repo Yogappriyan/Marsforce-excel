@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { env } from '../../config/env.ts';
 import { getDb } from '../../infrastructure/db/index.ts';
 import { jobWorker } from '../../infrastructure/queue/PostgresJobWorker.ts';
+import { getActiveLLMProvider, type GeoRouteAreaInput, type GeoRoutePlaceInput } from '../../infrastructure/llm/LLMProvider.ts';
 import { getStorageAdapter } from '../../infrastructure/storage/StorageAdapter.ts';
 import {
   requireAuth,
@@ -15,9 +16,17 @@ import {
   type AuthenticatedRequest,
 } from '../../middleware/security.ts';
 import { emitAuditLog } from '../audit/audit.module.ts';
+import {
+  canonicalizeGeoLabel,
+  extractSignificantTokens,
+  normalizeGeoGroupKey,
+  parseAddressHierarchy,
+} from '../processing/geoIntelligence.engine.ts';
 import { buildRecordFilterClause } from '../records/records.module.ts';
 import {
   buildAreaWorkbookWithStats,
+  buildCombinedRouteWorkbookWithStats,
+  buildOrderedPlaceGroups,
   buildGeoZipBundle,
   neutralizeExcelCell,
   safeFileSegment,
@@ -28,7 +37,7 @@ import {
 
 export { neutralizeExcelCell };
 
-export type ExportMode = 'AREA_WISE' | 'COMBINED_ZIP' | 'SINGLE_XLSX' | 'CSV';
+export type ExportMode = 'ROUTE_XLSX' | 'AREA_WISE' | 'COMBINED_ZIP' | 'SINGLE_XLSX' | 'CSV';
 
 const AllowedExportColumnEnum = z.enum([
   'consumer_id',
@@ -59,7 +68,7 @@ function sanitizeExportDto<T extends Record<string, any>>(row: T): Omit<T, 'stor
 }
 
 const CreateExportSchema = z.object({
-  exportMode: z.enum(['AREA_WISE', 'COMBINED_ZIP', 'SINGLE_XLSX', 'CSV']).optional(),
+  exportMode: z.enum(['ROUTE_XLSX', 'AREA_WISE', 'COMBINED_ZIP', 'SINGLE_XLSX', 'CSV']).optional(),
   format: z.enum(['XLSX', 'CSV', 'ZIP']).optional(),
   filters: z
     .object({
@@ -135,6 +144,134 @@ function extractRowValue(row: Record<string, any>, colKey: string): string | num
   return neutralizeExcelCell(row[colKey] ?? '');
 }
 
+async function computeAiPlaceOrdersByArea(records: GeoExportRecord[]): Promise<Map<string, string[]>> {
+  const aiOrders = new Map<string, string[]>();
+  try {
+    const provider = await getActiveLLMProvider();
+    if (!provider.isConfigured()) return aiOrders;
+
+    const areaBuckets = new Map<string, { displayName: string; rows: GeoExportRecord[] }>();
+    for (const r of records) {
+      const rawArea = r.area && r.area.trim() ? r.area.trim() : '';
+      if (!rawArea || rawArea.toUpperCase() === 'UNASSIGNED') continue;
+      const areaKey = normalizeGeoGroupKey(rawArea);
+      const displayName = canonicalizeGeoLabel(rawArea) || rawArea;
+      const bucket = areaBuckets.get(areaKey);
+      if (bucket) bucket.rows.push(r);
+      else areaBuckets.set(areaKey, { displayName, rows: [r] });
+    }
+
+    for (const [areaKey, bucket] of areaBuckets.entries()) {
+      const preGroups = buildOrderedPlaceGroups(bucket.rows).filter(
+        (g) => !g.isUnidentified && g.key !== '__UNIDENTIFIED__'
+      );
+      if (preGroups.length < 3 || preGroups.length > 80) continue;
+
+      // Privacy-safe payload: only place labels, PINs, postal zones, and non-PII locality context hints
+      const placeInputs: GeoRoutePlaceInput[] = preGroups.map((g) => {
+        const pins = new Set<string>();
+        const zones = new Set<string>();
+        const hints = new Set<string>();
+        for (const row of g.rows) {
+          if (row.pin_code && /^[1-9]\d{5}$/.test(row.pin_code.trim())) {
+            pins.add(row.pin_code.trim());
+          }
+          const rawAddr = Object.entries(row.raw_data || {})
+            .filter(([k, v]) => /(addr|address|loc|street|area|place|city|pin)/i.test(k) && v)
+            .map(([, v]) => String(v))
+            .join(', ');
+          const parsed = parseAddressHierarchy(rawAddr);
+          if (parsed.pinCode) pins.add(parsed.pinCode);
+          if (parsed.postalZoneHint) zones.add(parsed.postalZoneHint);
+          if (row.sub_area) hints.add(row.sub_area);
+          if (parsed.areaFromAddress) hints.add(parsed.areaFromAddress);
+          if (row.city) hints.add(row.city);
+          if (row.street && !/\d{6,}/.test(row.street)) {
+            const tokens = extractSignificantTokens(row.street).slice(0, 3).join(' ');
+            if (tokens) hints.add(tokens);
+          }
+        }
+        return {
+          key: g.key,
+          label: g.displayName,
+          pins: Array.from(pins).slice(0, 6),
+          zones: Array.from(zones).slice(0, 6),
+          contextHints: Array.from(hints).slice(0, 6),
+        };
+      });
+
+      const orderedKeys = await provider.orderLocalitiesByProximityBatch(bucket.displayName, placeInputs);
+      if (orderedKeys && orderedKeys.length > 0) {
+        aiOrders.set(areaKey, orderedKeys);
+      }
+    }
+  } catch {
+    // Deterministic spatial proximity graph remains primary fallback
+  }
+  return aiOrders;
+}
+
+async function computeAiAreaOrder(records: GeoExportRecord[]): Promise<string[] | null> {
+  try {
+    const provider = await getActiveLLMProvider();
+    if (!provider.isConfigured()) return null;
+
+    const areaBuckets = new Map<string, { displayName: string; rows: GeoExportRecord[] }>();
+    const cityCounts = new Map<string, number>();
+
+    for (const r of records) {
+      if (r.city && r.city.trim()) {
+        const c = r.city.trim();
+        cityCounts.set(c, (cityCounts.get(c) || 0) + 1);
+      }
+      const rawArea = r.area && r.area.trim() ? r.area.trim() : '';
+      if (!rawArea || rawArea.toUpperCase() === 'UNASSIGNED') continue;
+      const areaKey = normalizeGeoGroupKey(rawArea);
+      const displayName = canonicalizeGeoLabel(rawArea) || rawArea;
+      const bucket = areaBuckets.get(areaKey);
+      if (bucket) bucket.rows.push(r);
+      else areaBuckets.set(areaKey, { displayName, rows: [r] });
+    }
+
+    if (areaBuckets.size < 3 || areaBuckets.size > 60) return null;
+
+    const topCity = Array.from(cityCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || 'India Service Region';
+
+    const areaInputs: GeoRouteAreaInput[] = Array.from(areaBuckets.entries()).map(([key, bucket]) => {
+      const pins = new Set<string>();
+      const zones = new Set<string>();
+      const localities = new Set<string>();
+      for (const row of bucket.rows) {
+        if (row.pin_code && /^[1-9]\d{5}$/.test(row.pin_code.trim())) {
+          pins.add(row.pin_code.trim());
+        }
+        if (row.street_group && row.street_group.toUpperCase() !== 'UNIDENTIFIED') {
+          localities.add(row.street_group);
+        }
+        if (row.sub_area) localities.add(row.sub_area);
+        const rawAddr = Object.entries(row.raw_data || {})
+          .filter(([k, v]) => /(addr|address|loc|street|area|place|city|pin)/i.test(k) && v)
+          .map(([, v]) => String(v))
+          .join(', ');
+        const parsed = parseAddressHierarchy(rawAddr);
+        if (parsed.pinCode) pins.add(parsed.pinCode);
+        if (parsed.postalZoneHint) zones.add(parsed.postalZoneHint);
+      }
+      return {
+        key,
+        label: bucket.displayName,
+        pins: Array.from(pins).slice(0, 6),
+        zones: Array.from(zones).slice(0, 6),
+        sampleLocalities: Array.from(localities).slice(0, 10),
+      };
+    });
+
+    return await provider.orderAreasByRouteProximity(topCity, areaInputs);
+  } catch {
+    return null;
+  }
+}
+
 export async function runExportJob(exportId: string): Promise<void> {
   const db = getDb();
   const expRes = await db.query<{
@@ -199,10 +336,14 @@ export async function runExportJob(exportId: string): Promise<void> {
         throw new Error(`No customer records found for Area "${areaLabel}".`);
       }
       const origHeaders = Array.from(new Set(rows.flatMap((r) => Object.keys(r.raw_data || {}))));
+      const aiPlaceOrdersByArea = await computeAiPlaceOrdersByArea(rows);
+      const areaDisplay = rows[0]?.area || areaLabel;
+      const areaAiKeys = aiPlaceOrdersByArea.get(normalizeGeoGroupKey(areaDisplay)) || null;
       const { buffer, stats } = await buildAreaWorkbookWithStats({
-        areaName: rows[0]?.area || areaLabel,
+        areaName: areaDisplay,
         records: rows,
         originalHeaders: origHeaders,
+        aiOrderedKeys: areaAiKeys,
       });
       if (
         stats.structuredDataCount !== stats.allRecordsCount ||
@@ -229,6 +370,51 @@ export async function runExportJob(exportId: string): Promise<void> {
           formula: `${rows.length} exported across ${stats.identifiedStreetGroupsCount} street groups + ${stats.unidentifiedStreetCount} unidentified`,
         },
       };
+    } else if (mode === 'ROUTE_XLSX') {
+      if (rows.length === 0) {
+        throw new Error('No customer records matched the selected export filters.');
+      }
+      const origHeaders = Array.from(new Set(rows.flatMap((r) => Object.keys(r.raw_data || {}))));
+      const [aiAreaOrder, aiPlaceOrdersByArea] = await Promise.all([
+        computeAiAreaOrder(rows),
+        computeAiPlaceOrdersByArea(rows),
+      ]);
+      const { buffer, stats } = await buildCombinedRouteWorkbookWithStats({
+        records: rows,
+        originalHeaders: origHeaders,
+        aiAreaOrder,
+        aiPlaceOrdersByArea,
+        onProgress: async (pct) => {
+          await db.query(`UPDATE exports SET progress = $2 WHERE id = $1`, [exportId, pct]);
+        },
+      });
+      if (
+        stats.structuredDataCount !== stats.allRecordsCount ||
+        stats.allRecordsCount !== stats.summaryTotalCount ||
+        stats.allRecordsCount !== rows.length
+      ) {
+        throw new Error(`EXPORT_RECONCILIATION_FAILED: Combined route export row count mismatch.`);
+      }
+      outputBuffer = buffer;
+      contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      manifest = {
+        mode: 'ROUTE_XLSX',
+        totalCustomerRecords: rows.length,
+        assignedAreaRecords: rows.length - stats.unassignedAreaRecordsCount,
+        unassignedAreaRecords: stats.unassignedAreaRecordsCount,
+        needsReviewCount: stats.needsReviewCount,
+        unidentifiedLocationCount: stats.unidentifiedLocationCount,
+        distinctValidAreaCount: stats.distinctValidAreaCount,
+        identifiedPlaceStopsCount: stats.identifiedPlaceStopsCount,
+        areaWorkbookCount: 1,
+        streetWorkbookCount: 0,
+        areaRouteOrder: stats.areaRouteOrder,
+        reconciliation: {
+          status: 'VERIFIED',
+          checkedAt: new Date().toISOString(),
+          formula: `${rows.length} customers sequenced across ${stats.distinctValidAreaCount} chained Areas & ${stats.identifiedPlaceStopsCount} street/place stops`,
+        },
+      };
     } else if (mode === 'COMBINED_ZIP' || mode === 'AREA_WISE') {
       let sourceRows: SourceRowAuditExportItem[] = [];
       if (mode === 'COMBINED_ZIP') {
@@ -250,10 +436,17 @@ export async function runExportJob(exportId: string): Promise<void> {
         sourceRows = srRes.rows;
       }
 
+      const [aiAreaOrder, aiPlaceOrdersByArea] = await Promise.all([
+        computeAiAreaOrder(rows),
+        computeAiPlaceOrdersByArea(rows),
+      ]);
+
       const bundle = await buildGeoZipBundle({
         mode,
         records: rows,
         sourceRows,
+        aiAreaOrder,
+        aiPlaceOrdersByArea,
         onProgress: async (pct) => {
           await db.query(`UPDATE exports SET progress = $2 WHERE id = $1`, [exportId, pct]);
         },
@@ -464,6 +657,8 @@ export function createExportsRouter() {
       let filename: string;
       if (exportMode === 'CSV') {
         filename = `marsforce_export_${datePart}_${exportId.slice(0, 8)}.csv`;
+      } else if (exportMode === 'ROUTE_XLSX') {
+        filename = `MARSFORCE_ROUTE_OPTIMIZED_${datePart}_${exportId.slice(0, 6)}.xlsx`;
       } else if (exportMode === 'COMBINED_ZIP') {
         filename = `MARSFORCE_AUDIT_EXPORT_${datePart}_${exportId.slice(0, 6)}.zip`;
       } else if (isSingleAreaDirect) {
